@@ -21,39 +21,73 @@ class EditorStates(StatesGroup):
     waiting_for_reference_or_prompt = State()
     processing = State()
 
-# Временное хранилище пользовательских сессий
+# Сессии пользователей: { user_id: { "input_video": Path, "reference_url": str, "prompt": str } }
 user_sessions = {}
+
+def get_session(user_id: int) -> dict:
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {
+            "input_video": None,
+            "reference_url": None,
+            "prompt": None
+        }
+    return user_sessions[user_id]
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     welcome_text = (
-        "🎬 **Добро пожаловать в AI-Editor (from softer_052)!**\n\n"
+        "🎬 <b>Добро пожаловать в AI-Editor (from softer_052)!</b>\n\n"
         "Я помогу вам автоматически смонтировать видео:\n"
-        "1. Вырежу неловкие паузы и «воду»\n"
-        "2. Добавлю динамические зумы (эффект удержания внимания)\n"
-        "3. Смонтирую под темп любого видео-референса (YouTube / Reels / TikTok)\n\n"
-        "📤 **Отправьте мне видео**, которое хотите смонтировать (файлом или видеосообщением):"
+        "1. ✂️ Вырежу неловкие паузы и «воду»\n"
+        "2. 🔍 Добавлю динамические зумы (удержание внимания)\n"
+        "3. 🔗 Смонтирую под темп любого референса (TikTok, Reels, Shorts)\n\n"
+        "👉 <b>Отправьте мне ваше видео</b> (файлом или видеосообщением) или <b>ссылку на референс</b>!"
     )
-    await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data == "help")
 async def cb_help(callback: CallbackQuery):
     help_text = (
-        "ℹ️ **Как пользоваться студией автомонтажа:**\n\n"
-        "1. Отправьте исходное видео в этот чат.\n"
-        "2. Пришлите ссылку на видео-референс или напишите текстом пожелания.\n"
-        "3. Бот проанализирует референс, вырежет паузы и смонтирует ролик.\n"
-        "4. Готовый файл придет вам прямо сюда в высоком качестве!"
+        "ℹ️ <b>Как пользоваться студией:</b>\n\n"
+        "1. Отправьте видео, которое хотите смонтировать.\n"
+        "2. Пришлите ссылку на TikTok / Reels / Shorts (или опишите текстом стиль).\n"
+        "3. Нажмите кнопку <b>«🚀 Запустить монтаж»</b>.\n"
+        "4. Получите готовое смонтированное видео обратно в чат!"
     )
-    await callback.message.answer(help_text, parse_mode="Markdown")
+    await callback.message.answer(help_text, parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data.in_(["preset_reels", "preset_reference", "settings"]))
+async def cb_presets(callback: CallbackQuery):
+    if callback.data == "preset_reels":
+        await callback.message.answer(
+            "⚡ <b>Выбран пресет: Быстрый Reels / Shorts</b>\n"
+            "Будет применено: авто-удаление всех пауз + динамические зумы 1.1x.\n"
+            "Теперь отправьте видео (если еще не отправляли) или нажмите запуск!",
+            parse_mode="HTML"
+        )
+    elif callback.data == "preset_reference":
+        await callback.message.answer(
+            "🔗 Отправьте ссылку на видео-референс (TikTok, Reels или YouTube Shorts):",
+            parse_mode="HTML"
+        )
+    elif callback.data == "settings":
+        await callback.message.answer(
+            "⚙️ <b>Текущие настройки:</b>\n"
+            "• Порог тишины: <code>-30 dB</code>\n"
+            "• Мин. длительность паузы: <code>0.5 сек</code>\n"
+            "• Динамический зум: <code>Включен (1.1x)</code>\n"
+            "• Формат: <code>MP4 (H.264)</code>",
+            parse_mode="HTML"
+        )
     await callback.answer()
 
 @router.message(F.video | F.document)
 async def handle_video(message: Message, bot: Bot, state: FSMContext):
     document = message.video or message.document
     if message.document and not (message.document.mime_type and "video" in message.document.mime_type):
-        await message.answer("Пожалуйста, отправьте именно видеофайл (mp4, mov).")
+        await message.answer("Пожалуйста, отправьте именно видеофайл (mp4, mov, avi).")
         return
 
     status_msg = await message.answer("⏳ Скачиваю видео на сервер обработки...")
@@ -66,79 +100,96 @@ async def handle_video(message: Message, bot: Bot, state: FSMContext):
 
     await bot.download_file(file_info.file_path, destination=input_path)
     
-    user_sessions[user_id] = {
-        "input_video": input_path,
-        "reference_url": None,
-        "prompt": None
-    }
-    await state.set_state(EditorStates.waiting_for_reference_or_prompt)
+    session = get_session(user_id)
+    session["input_video"] = input_path
+
+    ref_status = f"\n🔗 <i>Прикреплен референс:</i> <code>{session['reference_url']}</code>" if session.get("reference_url") else ""
 
     await status_msg.edit_text(
-        "✅ **Видео успешно получено!**\n\n"
+        f"✅ <b>Видео успешно получено!</b>{ref_status}\n\n"
         "Теперь вы можете:\n"
-        "• Отправить **ссылку на референс** (YouTube Shorts / Reels / TikTok)\n"
-        "• Написать **текстовые требования** (например: «сделай быстрый клиповый монтаж, удали все паузы»)\n"
-        "• Или нажмите кнопку ниже для быстрого авто-монтажа:",
+        "• Отправить ссылку на референс (TikTok / Reels / Shorts)\n"
+        "• Написать текстовые пожелания к монтажу\n"
+        "• Или сразу нажать <b>«🚀 Запустить монтаж»</b>:",
         reply_markup=get_process_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
-@router.message(EditorStates.waiting_for_reference_or_prompt, F.text)
-async def handle_reference_or_prompt(message: Message, state: FSMContext):
+@router.message(F.text)
+async def handle_text_or_url(message: Message, state: FSMContext):
     user_id = message.from_user.id
     text = message.text.strip()
-    session = user_sessions.get(user_id, {})
+    session = get_session(user_id)
 
-    # Проверка: ссылка ли это
+    # Поиск URL (YouTube, TikTok, Instagram и т.д.)
     url_pattern = re.compile(r'https?://[^\s]+')
     urls = url_pattern.findall(text)
 
     if urls:
         session["reference_url"] = urls[0]
-        await message.answer(
-            f"🔗 Референс принят: `{urls[0]}`\nГотов к монтажу по стилю этого видео!",
-            reply_markup=get_process_keyboard(),
-            parse_mode="Markdown"
-        )
+        if session.get("input_video"):
+            await message.answer(
+                f"🔗 <b>Референс принят:</b> <code>{urls[0]}</code>\n"
+                "Видео и референс готовы! Нажмите кнопку ниже для запуска:",
+                reply_markup=get_process_keyboard(),
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer(
+                f"🔗 <b>Референс принят:</b> <code>{urls[0]}</code>\n\n"
+                "👉 Теперь <b>отправьте ваше исходное видео</b> (файлом или видеосообщением), которое нужно смонтировать по этому образцу!",
+                parse_mode="HTML"
+            )
     else:
         session["prompt"] = text
-        await message.answer(
-            f"📝 Требования приняты: *{text}*\nНажмите кнопку ниже для запуска:",
-            reply_markup=get_process_keyboard(),
-            parse_mode="Markdown"
-        )
+        if session.get("input_video"):
+            await message.answer(
+                f"📝 <b>Пожелания приняты:</b> <i>{text}</i>\n"
+                "Нажмите кнопку ниже для запуска монтажа:",
+                reply_markup=get_process_keyboard(),
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer(
+                f"📝 <b>Пожелания приняты:</b> <i>{text}</i>\n\n"
+                "👉 Теперь <b>отправьте ваше исходное видео</b> для монтажа!",
+                parse_mode="HTML"
+            )
 
 @router.callback_query(F.data == "start_render")
 async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
     user_id = callback.from_user.id
-    session = user_sessions.get(user_id)
+    session = get_session(user_id)
 
-    if not session or "input_video" not in session:
-        await callback.message.answer("Сначала отправьте исходное видео.")
+    if not session.get("input_video"):
+        await callback.message.answer("⚠️ Сначала отправьте исходное видео в чат.")
         await callback.answer()
         return
 
     input_video = session["input_video"]
     ref_url = session.get("reference_url")
     
-    status_msg = await callback.message.edit_text("🔍 **Шаг 1/3:** Анализирую паузы и структуру речи...")
+    status_msg = await callback.message.edit_text("🔍 <b>Шаг 1/3:</b> Анализирую структуру речи и пауз...", parse_mode="HTML")
     
     try:
-        # Анализ референса, если ссылка была предоставлена
         pace_info = None
         if ref_url:
-            await status_msg.edit_text("📥 **Шаг 1/3:** Скачиваю и анализирую видео-референс...")
+            await status_msg.edit_text("📥 <b>Шаг 1/3:</b> Скачиваю и анализирую видео-референс...", parse_mode="HTML")
             try:
                 ref_path = await VideoDownloader.download_reference(ref_url, f"ref_{user_id}.mp4")
                 pace_info = await VideoAnalyzer.analyze_cuts(ref_path)
             except Exception as e:
                 await callback.message.answer(f"⚠️ Не удалось распарсить референс ({e}), использую стандартный динамичный темп.")
 
-        await status_msg.edit_text("✂️ **Шаг 2/3:** Нахожу немые паузы для вырезания...")
+        await status_msg.edit_text("✂️ <b>Шаг 2/3:</b> Нахожу немые паузы для вырезания...", parse_mode="HTML")
         silences = await AudioAnalyzer.detect_silence(input_video)
 
         await status_msg.edit_text(
-            f"🎬 **Шаг 3/3:** Монтирую ролик... Найдено пауз: {len(silences)}.\nПрименяю динамический зум и склейку..."
+            f"🎬 <b>Шаг 3/3:</b> Монтирую ролик...\n"
+            f"• Найдено пауз: <b>{len(silences)}</b>\n"
+            f"• Динамический зум: <b>Включен</b>\n"
+            f"Идет рендеринг через FFmpeg...",
+            parse_mode="HTML"
         )
         
         output_name = f"result_{user_id}.mp4"
@@ -149,16 +200,17 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
             apply_dynamic_zoom=True
         )
 
-        await status_msg.edit_text("🚀 Отправляю готовое видео в чат...")
+        await status_msg.edit_text("🚀 Отправляю готовое видео в чат...", parse_mode="HTML")
         video_file = FSInputFile(result_path)
         
+        pace_str = pace_info['pace'] if pace_info else 'Reels Dynamic'
         caption = (
-            "✨ **Ваше видео готово!**\n"
-            f"• Вырезано пауз: {len(silences)}\n"
-            f"• Стиль: {pace_info['pace'] if pace_info else 'Reels Dynamic'}\n\n"
-            "Смонтировано в **ai-editor from softer_052**"
+            "✨ <b>Ваше видео готово!</b>\n\n"
+            f"• Вырезано немых пауз: <b>{len(silences)}</b>\n"
+            f"• Темп склеек: <b>{pace_str}</b>\n\n"
+            "Смонтировано в <b>ai-editor from softer_052</b>"
         )
-        await callback.message.answer_video(video=video_file, caption=caption, parse_mode="Markdown")
+        await callback.message.answer_video(video=video_file, caption=caption, parse_mode="HTML")
         await status_msg.delete()
 
     except Exception as e:
@@ -166,3 +218,12 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
     finally:
         await state.clear()
         await callback.answer()
+
+@router.callback_query(F.data == "cancel")
+async def cb_cancel(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    if user_id in user_sessions:
+        del user_sessions[user_id]
+    await state.clear()
+    await callback.message.edit_text("❌ Обработка отменена. Отправьте /start для начала заново.")
+    await callback.answer()
