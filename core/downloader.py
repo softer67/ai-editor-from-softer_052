@@ -11,8 +11,8 @@ class VideoDownloader:
     async def download_reference(url: str, output_name: str = "reference.mp4") -> Path:
         """
         Скачивает видео по ссылке:
-        - Если ссылка с Google Диска: использует gdown
-        - Для остальных сайтов (YouTube/Shorts/TikTok/Reels): использует yt-dlp
+        - Google Диск: использует gdown
+        - Яндекс.Диск / YouTube / TikTok / Reels и прямые ссылки: использует yt-dlp
         """
         output_path = TEMP_DIR / output_name
 
@@ -20,34 +20,44 @@ class VideoDownloader:
         if "drive.google.com" in url or "docs.google.com" in url:
             def _download_gdrive():
                 output_file = str(output_path)
+                
+                # Извлекаем ID файла из ссылки
+                file_id = None
+                id_match = re.search(r'/d/([a-zA-Z0-9_-]+)', url) or re.search(r'id=([a-zA-Z0-9_-]+)', url)
+                if id_match:
+                    file_id = id_match.group(1)
+
                 try:
-                    res = gdown.download(url=url, output=output_file, quiet=False, fuzzy=True)
+                    if file_id:
+                        res = gdown.download(id=file_id, output=output_file, quiet=False)
+                    else:
+                        res = gdown.download(url=url, output=output_file, quiet=False)
+                    
                     if not res or not Path(res).exists() or Path(res).stat().st_size == 0:
                         raise ValueError(
-                            "Google Диск отклонил скачивание (HTTP 403 Forbidden). "
-                            "Пожалуйста, откройте доступ: нажмите правой кнопкой на файл в Google Диске "
-                            "-> «Поделиться» -> смените «Ограниченный доступ» на «Все, у кого есть ссылка»!"
+                            "Google Диск не отдает файл (404/403). Доступ к файлу закрыт.\n"
+                            "В Google Диске нажмите «Поделиться» -> смените «Ограниченный доступ» на «Все, у кого есть ссылка» -> «Готово»."
                         )
                     return Path(res)
                 except Exception as e:
-                    if "Permission denied" in str(e) or "403" in str(e) or "Forbidden" in str(e):
+                    err_str = str(e)
+                    if "Cannot retrieve" in err_str or "Permission denied" in err_str or "403" in err_str or "404" in err_str:
                         raise ValueError(
-                            "Google Диск отклонил доступ (403 Forbidden). "
-                            "Убедитесь, что в Google Диске включен общий доступ: "
-                            "нажмите «Поделиться» -> смените доступ на «Все, у кого есть ссылка»!"
+                            "Google Диск отклонил доступ. Файл сейчас закрыт настройками приватности.\n"
+                            "Откройте доступ: в Google Диске нажмите «Поделиться» -> переключите «Ограниченный доступ» на «Все, у кого есть ссылка» -> нажмите «Готово»."
                         )
                     raise e
 
             return await asyncio.to_thread(_download_gdrive)
 
-        # Обычные ссылки (YouTube, TikTok, Reels и др.) через yt-dlp
+        # Обычные ссылки (Яндекс.Диск, YouTube, TikTok, Reels и др.) через yt-dlp
         ydl_opts = {
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': str(output_path.with_suffix('')) + '.%(ext)s',
             'merge_output_format': 'mp4',
             'quiet': True,
             'no_warnings': True,
-            'max_filesize': 500 * 1024 * 1024,  # до 500 МБ
+            'max_filesize': 500 * 1024 * 1024,
         }
 
         def _download_ytdlp():
