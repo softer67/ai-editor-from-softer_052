@@ -1,6 +1,7 @@
 aiogram>=3.4.1
 python-dotenv>=1.0.0
 yt-dlp>=2024.3.10
+gdown>=5.2.0
 scenedetect[opencv]>=0.6.2
 openai-whisper>=20231117
 moviepy>=1.0.3
