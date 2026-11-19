@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 from pathlib import Path
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
@@ -7,7 +8,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import TEMP_DIR
+from config import TEMP_DIR, FFMPEG_PATH
 from bot.keyboards import get_main_keyboard, get_process_keyboard
 from core.downloader import VideoDownloader
 from core.video_analyzer import VideoAnalyzer
@@ -51,6 +52,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "help")
 async def cb_help(callback: CallbackQuery):
+    await callback.answer()
     help_text = (
         "ℹ️ <b>Как пользоваться студией:</b>\n\n"
         "1. <b>Исходное видео:</b> отправьте файл до 20 МБ прямо в чат ИЛИ пришлите ссылку на видео (Google Диск, YouTube, Яндекс.Диск).\n"
@@ -59,10 +61,10 @@ async def cb_help(callback: CallbackQuery):
         "4. Получите готовый смонтированный ролик!"
     )
     await callback.message.answer(help_text, parse_mode="HTML")
-    await callback.answer()
 
 @router.callback_query(F.data.in_(["preset_reels", "preset_reference", "settings"]))
 async def cb_presets(callback: CallbackQuery):
+    await callback.answer()
     if callback.data == "preset_reels":
         await callback.message.answer(
             "⚡ <b>Выбран пресет: Быстрый Reels / Shorts</b>\n"
@@ -84,7 +86,6 @@ async def cb_presets(callback: CallbackQuery):
             "• Лимит прямого файла Telegram: <code>20 МБ</code> (ссылки без лимита)",
             parse_mode="HTML"
         )
-    await callback.answer()
 
 @router.message(F.video | F.document)
 async def handle_video(message: Message, bot: Bot, state: FSMContext):
@@ -94,17 +95,16 @@ async def handle_video(message: Message, bot: Bot, state: FSMContext):
         return
 
     file_size = getattr(document, "file_size", 0) or 0
-    # Telegram Bot API имеет жесткий лимит 20 МБ на скачивание файлов ботом
     max_size_bytes = 20 * 1024 * 1024
 
     if file_size > max_size_bytes:
         size_mb = round(file_size / (1024 * 1024), 1)
         warning_text = (
             f"⚠️ <b>Файл слишком большой ({size_mb} МБ)!</b>\n\n"
-            "Telegram Bot API официально запрещает ботам напрямую скачивать файлы тяжелее <b>20 МБ</b>.\n\n"
-            "💡 <b>Как обработать это видео:</b>\n"
-            "1. Загрузите его на <b>Google Диск</b>, <b>Яндекс.Диск</b> или <b>YouTube</b> и отправьте боту ссылку — скачаем без ограничений!\n"
-            "2. Либо отправьте более короткий/сжатый фрагмент видео (до 20 МБ, около 1–2 минут)."
+            "Telegram Bot API запрещает ботам напрямую скачивать файлы тяжелее <b>20 МБ</b>.\n\n"
+            "💡 <b>Как отправить это видео:</b>\n"
+            "1. Загрузите его на <b>Google Диск</b> или <b>Яндекс.Диск</b> и отправьте боту ссылку — скачаем без ограничений!\n"
+            "2. Либо отправьте более короткий/сжатый фрагмент (до 20 МБ, около 1–2 минут)."
         )
         await message.answer(warning_text, parse_mode="HTML")
         return
@@ -137,12 +137,13 @@ async def handle_video(message: Message, bot: Bot, state: FSMContext):
     except Exception as e:
         await status_msg.edit_text(
             f"❌ Не удалось скачать файл: {e}\n"
-            "Попробуйте отправить файл меньшего размера или ссылкой на облако/YouTube.",
+            "Попробуйте отправить файл меньшего размера или ссылкой на диск/YouTube.",
             parse_mode="HTML"
         )
 
 @router.callback_query(F.data.startswith("set_link_"))
 async def cb_set_link_type(callback: CallbackQuery):
+    await callback.answer()
     action = callback.data.replace("set_link_", "")
     user_id = callback.from_user.id
     session = get_session(user_id)
@@ -150,25 +151,22 @@ async def cb_set_link_type(callback: CallbackQuery):
 
     if not url:
         await callback.message.edit_text("Ссылка устарела. Отправьте ее снова.")
-        await callback.answer()
         return
 
     if action == "input":
-        # Скачиваем по ссылке как исходник для монтажа
         msg = await callback.message.edit_text(f"⏳ Скачиваю исходное видео по ссылке...\n<code>{url}</code>", parse_mode="HTML")
         try:
             downloaded = await VideoDownloader.download_reference(url, f"user_{user_id}_input.mp4")
             session["input_video"] = downloaded
             await msg.edit_text(
                 "✅ <b>Исходное видео успешно скачано!</b>\n\n"
-                "Теперь можете прикрепить ссылку на референс, написать пожелания или запустить монтаж:",
+                "Теперь можете прикрепить ссылку на референс, написать пожелания или сразу запустить монтаж:",
                 reply_markup=get_process_keyboard(),
                 parse_mode="HTML"
             )
         except Exception as e:
-            await msg.edit_text(f"❌ Ошибка скачивания видео по ссылке: {e}")
+            await msg.edit_text(f"❌ {e}", parse_mode="HTML")
     else:
-        # Устанавливаем как референс стиля
         session["reference_url"] = url
         if session.get("input_video"):
             await callback.message.edit_text(
@@ -183,7 +181,6 @@ async def cb_set_link_type(callback: CallbackQuery):
                 "👉 Теперь отправьте ваше исходное видео (файлом до 20 МБ или ссылкой)!",
                 parse_mode="HTML"
             )
-    await callback.answer()
 
 @router.message(F.text)
 async def handle_text_or_url(message: Message, state: FSMContext):
@@ -191,7 +188,6 @@ async def handle_text_or_url(message: Message, state: FSMContext):
     text = message.text.strip()
     session = get_session(user_id)
 
-    # Поиск URL (YouTube, TikTok, Google Drive и т.д.)
     url_pattern = re.compile(r'https?://[^\s]+')
     urls = url_pattern.findall(text)
 
@@ -199,7 +195,6 @@ async def handle_text_or_url(message: Message, state: FSMContext):
         url = urls[0]
         session["pending_url"] = url
 
-        # Если уже есть исходное видео, по умолчанию считаем ссылку референсом
         if session.get("input_video"):
             session["reference_url"] = url
             await message.answer(
@@ -209,7 +204,6 @@ async def handle_text_or_url(message: Message, state: FSMContext):
                 parse_mode="HTML"
             )
         else:
-            # Спрашиваем: это исходник для монтажа или референс стиля?
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [
                     InlineKeyboardButton(text="📥 Это исходное видео (смонтировать его)", callback_data="set_link_input")
@@ -242,12 +236,14 @@ async def handle_text_or_url(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "start_render")
 async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    # Сразу отвечаем на callback, чтобы Telegram не выдавал Timeout
+    await callback.answer("Запускаю процесс монтажа...")
+    
     user_id = callback.from_user.id
     session = get_session(user_id)
 
     if not session.get("input_video"):
         await callback.message.answer("⚠️ Сначала отправьте исходное видео в чат.")
-        await callback.answer()
         return
 
     input_video = session["input_video"]
@@ -272,7 +268,7 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
             f"🎬 <b>Шаг 3/3:</b> Монтирую ролик...\n"
             f"• Найдено пауз: <b>{len(silences)}</b>\n"
             f"• Динамический зум: <b>Включен</b>\n"
-            f"Идет рендеринг через FFmpeg...",
+            f"Идет рендеринг через FFmpeg (займет ~1–2 мин)...",
             parse_mode="HTML"
         )
         
@@ -283,6 +279,25 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
             output_name=output_name,
             apply_dynamic_zoom=True
         )
+
+        # Проверка размера готового файла перед отправкой в Telegram
+        final_size = result_path.stat().st_size
+        max_upload_size = 49 * 1024 * 1024  # 49 МБ (лимит Telegram Bot API 50 МБ)
+
+        if final_size > max_upload_size:
+            await status_msg.edit_text("📦 Сжимаю видео под лимит Telegram (до 50 МБ)...", parse_mode="HTML")
+            compressed_path = TEMP_DIR / f"result_{user_id}_compressed.mp4"
+            cmd_compress = [
+                FFMPEG_PATH, "-y", "-i", str(result_path),
+                "-vf", "scale=-2:720",
+                "-c:v", "libx264", "-crf", "28",
+                "-maxrate", "950k", "-bufsize", "1900k",
+                "-c:a", "aac", "-b:a", "96k",
+                str(compressed_path)
+            ]
+            proc = subprocess.run(cmd_compress, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if proc.returncode == 0 and compressed_path.exists():
+                result_path = compressed_path
 
         await status_msg.edit_text("🚀 Отправляю готовое видео в чат...", parse_mode="HTML")
         video_file = FSInputFile(result_path)
@@ -301,13 +316,12 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
         await callback.message.answer(f"❌ Ошибка во время монтажа: {e}")
     finally:
         await state.clear()
-        await callback.answer()
 
 @router.callback_query(F.data == "cancel")
 async def cb_cancel(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     user_id = callback.from_user.id
     if user_id in user_sessions:
         del user_sessions[user_id]
     await state.clear()
     await callback.message.edit_text("❌ Обработка отменена. Отправьте /start для начала заново.")
-    await callback.answer()

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import sys
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
+from aiogram.client.session.aiohttp import AiohttpSession
 
 from config import BOT_TOKEN
 from bot.handlers import router
@@ -18,7 +18,9 @@ async def main():
         logging.error("BOT_TOKEN не задан! Укажите токен в файле .env")
         return
 
-    bot = Bot(token=BOT_TOKEN)
+    # Увеличиваем таймаут запросов до 300 секунд для надежной загрузки больших видео
+    session = AiohttpSession(timeout=300.0)
+    bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
 
     dp.include_router(router)
