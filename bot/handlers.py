@@ -18,6 +18,7 @@ from bot.keyboards import (
     MODE_NAMES
 )
 from core.downloader import VideoDownloader
+from core.telegram_downloader import TelegramDownloader
 from core.video_analyzer import VideoAnalyzer
 from core.audio_analyzer import AudioAnalyzer
 from core.video_processor import VideoProcessor
@@ -55,7 +56,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "• ⚡ <b>Клиповый Эдит (Shorts/TikTok)</b> — ультрадинамика, зумы 1.15x, Whoosh, драйв\n"
         "• 📺 <b>YouTube (Длинное видео)</b> — плавный темп 16:9, без резких скачков, мягкий фон\n"
         "• ✂️ <b>Чистка пауз и тишины</b> — чистый оригинальный ракурс без эффектов и зумов\n\n"
-        "🎵 <b>Музыка:</b> можно включить автоподбор нейросетью или прислать <b>свой аудиофайл</b> прямо в чат!\n\n"
+        "🚀 <b>Видео любого размера (даже 100+ МБ) можно отправлять прямо файлом в чат!</b> Больше не нужно загружать на диски.\n\n"
         "👉 <b>Выберите режим ниже:</b>"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
@@ -65,13 +66,15 @@ async def cb_help(callback: CallbackQuery):
     await callback.answer()
     help_text = (
         "ℹ️ <b>Возможности студии:</b>\n\n"
-        "1. <b>Режимы:</b>\n"
+        "1. <b>Прямая отправка видео любого размера:</b>\n"
+        "• Бот скачивает видео любого веса (до 2 ГБ) напрямую из Telegram с отображением процентов и таймера.\n\n"
+        "2. <b>Режимы:</b>\n"
         "• <code>Эдит</code> — быстрый нарезной клип с зумами и звуками.\n"
         "• <code>YouTube</code> — полноформатное длинное видео с мягкой чисткой пауз.\n"
         "• <code>Чистка</code> — вырезает немые паузы, вздохи и заминки без изменения картинки.\n\n"
-        "2. <b>Музыка:</b>\n"
+        "3. <b>Музыка:</b>\n"
         "• Отправьте любой <b>аудиофайл или голосовое</b> в чат, и бот возьмет его как фоновый трек!\n"
-        "• Либо выберите <b>AI-подбор</b> — бот сам выберет трек под тематику видео (Phonk, Lo-Fi, Upbeat)."
+        "• Либо выберите <b>AI-подбор</b> — бот сам выберет трек под видео."
     )
     await callback.message.answer(help_text, parse_mode="HTML")
 
@@ -106,10 +109,9 @@ async def cb_set_mode(callback: CallbackQuery):
             parse_mode="HTML"
         )
     else:
-        # Убираем лишние кнопки режимов, оставляем только лаконичное меню
         await callback.message.edit_text(
             f"✅ Выбран режим: <b>{mode_title}</b>\n\n"
-            "👉 Теперь <b>отправьте видео</b> (файлом до 20 МБ или ссылкой на Google Диск / Яндекс.Диск) для начала монтажа!",
+            "👉 Теперь <b>отправьте видео</b> (файлом любого размера прямо в чат или ссылкой)!",
             reply_markup=get_mode_selected_keyboard(session["mode"]),
             parse_mode="HTML"
         )
@@ -251,6 +253,7 @@ async def handle_custom_audio(message: Message, bot: Bot):
             parse_mode="HTML"
         )
 
+# Прием видео ЛЮБОГО размера (через Telegram MTProto без лимита 20 МБ)
 @router.message(F.video | F.document)
 async def handle_video(message: Message, bot: Bot, state: FSMContext):
     document = message.video or message.document
@@ -259,40 +262,49 @@ async def handle_video(message: Message, bot: Bot, state: FSMContext):
         return
 
     file_size = getattr(document, "file_size", 0) or 0
-    max_size_bytes = 20 * 1024 * 1024
+    size_mb = round(file_size / (1024 * 1024), 1)
 
-    if file_size > max_size_bytes:
-        size_mb = round(file_size / (1024 * 1024), 1)
-        warning_text = (
-            f"⚠️ <b>Файл слишком большой ({size_mb} МБ)!</b>\n\n"
-            "Telegram Bot API запрещает ботам напрямую скачивать файлы тяжелее <b>20 МБ</b>.\n\n"
-            "💡 <b>Как отправить это видео:</b>\n"
-            "1. Загрузите его на <b>Google Диск</b> или <b>Яндекс.Диск</b> и отправьте боту ссылку — скачаем без ограничений!\n"
-            "2. Либо отправьте более короткий/сжатый фрагмент (до 20 МБ, около 1–2 минут)."
-        )
-        await message.answer(warning_text, parse_mode="HTML")
-        return
+    # Примерная оценка времени на старте (~2 МБ/с)
+    est_sec = max(3, int(file_size / (2.0 * 1024 * 1024)))
+    if est_sec > 60:
+        est_str = f"~{est_sec // 60} мин {est_sec % 60} сек"
+    else:
+        est_str = f"~{est_sec} сек"
 
-    status_msg = await message.answer("⏳ Скачиваю видео на сервер обработки...")
+    status_msg = await message.answer(
+        f"⏳ <b>Начинаю загрузку видео ({size_mb} МБ)...</b>\n"
+        f"Примерное время скачивания: <b>({est_str})</b>",
+        parse_mode="HTML"
+    )
+
+    user_id = message.from_user.id
+    file_ext = Path(document.file_name).suffix if hasattr(document, "file_name") and document.file_name else ".mp4"
+    input_path = TEMP_DIR / f"user_{user_id}_input{file_ext}"
+
+    async def update_status(text: str):
+        try:
+            await status_msg.edit_text(text, parse_mode="HTML")
+        except Exception:
+            pass
+
     try:
-        file_id = document.file_id
-        file_info = await bot.get_file(file_id)
-        
-        file_ext = Path(file_info.file_path).suffix or ".mp4"
-        user_id = message.from_user.id
-        input_path = TEMP_DIR / f"user_{user_id}_input{file_ext}"
+        tg_dl = TelegramDownloader.get_instance()
+        await tg_dl.download_video(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            output_path=input_path,
+            status_update_fn=update_status
+        )
 
-        await bot.download_file(file_info.file_path, destination=input_path)
-        
         session = get_session(user_id)
         session["input_video"] = input_path
 
         ref_status = f"\n🔗 <i>Прикреплен референс:</i> <code>{session['reference_url']}</code>" if session.get("reference_url") else ""
 
         await status_msg.edit_text(
-            f"✅ <b>Видео успешно получено ({round(file_size/(1024*1024), 1)} МБ)!</b>{ref_status}\n\n"
+            f"✅ <b>Видео успешно получено ({size_mb} МБ)!</b>{ref_status}\n\n"
             f"Текущий режим: <b>{MODE_NAMES.get(session['mode'], '⚡ Эдит')}</b>\n"
-            "Выберите параметры и нажмите <b>«🚀 Запустить монтаж»</b>:",
+            "Нажмите <b>«🚀 Запустить монтаж»</b> или настройте параметры:",
             reply_markup=get_process_keyboard(
                 mode=session["mode"],
                 has_custom_music=session.get("custom_music_path") is not None,
@@ -303,8 +315,8 @@ async def handle_video(message: Message, bot: Bot, state: FSMContext):
         )
     except Exception as e:
         await status_msg.edit_text(
-            f"❌ Не удалось скачать файл: {e}\n"
-            "Попробуйте отправить файл меньшего размера или ссылкой на диск/YouTube.",
+            f"❌ Ошибка скачивания видео: {e}\n"
+            "Попробуйте отправить файл еще раз.",
             parse_mode="HTML"
         )
 
@@ -357,7 +369,7 @@ async def cb_set_link_type(callback: CallbackQuery):
             await callback.message.edit_text(
                 f"🔗 <b>Референс стиля принят:</b> <code>{url}</code>\n\n"
                 f"Режим: <b>{MODE_NAMES.get(session['mode'])}</b>\n"
-                "👉 Теперь отправьте ваше исходное видео (файлом до 20 МБ или ссылкой)!",
+                "👉 Теперь отправьте ваше исходное видео файлом прямо в чат!",
                 reply_markup=get_mode_selected_keyboard(session["mode"]),
                 parse_mode="HTML"
             )
@@ -431,7 +443,7 @@ async def handle_text_or_url(message: Message, state: FSMContext):
             await message.answer(
                 f"📝 <b>Пожелания приняты:</b> <i>{text}</i>\n"
                 f"Режим: <b>{MODE_NAMES.get(session['mode'])}</b>\n\n"
-                "👉 Теперь отправьте исходное видео для монтажа (файл или ссылку)!",
+                "👉 Теперь отправьте исходное видео прямо в чат!",
                 reply_markup=get_mode_selected_keyboard(session["mode"]),
                 parse_mode="HTML"
             )
