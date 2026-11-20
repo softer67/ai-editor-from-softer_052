@@ -6,7 +6,7 @@ MODE_NAMES = {
     "clean_silence": "✂️ Чистка пауз (Без зумов)"
 }
 
-def get_main_keyboard(current_mode: str = "edit_tiktok") -> InlineKeyboardMarkup:
+def get_main_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [
             InlineKeyboardButton(text="⚡ Клиповый Эдит / Shorts", callback_data="mode_edit_tiktok"),
@@ -19,6 +19,18 @@ def get_main_keyboard(current_mode: str = "edit_tiktok") -> InlineKeyboardMarkup
         ],
         [
             InlineKeyboardButton(text="⚙️ Музыка и звуки", callback_data="music_settings"),
+            InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_mode_selected_keyboard(current_mode: str = "edit_tiktok") -> InlineKeyboardMarkup:
+    keyboard = [
+        [
+            InlineKeyboardButton(text="🔄 Сменить режим монтажа", callback_data="change_mode")
+        ],
+        [
+            InlineKeyboardButton(text="🎵 Музыка и звуки", callback_data="music_settings"),
             InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")
         ]
     ]
@@ -46,7 +58,7 @@ def get_process_keyboard(
             InlineKeyboardButton(text="🚀 Запустить монтаж", callback_data="start_render")
         ],
         [
-            InlineKeyboardButton(text=f"Режим: {mode_label}", callback_data="change_mode")
+            InlineKeyboardButton(text=f"Режим: {mode_label} (сменить)", callback_data="change_mode")
         ],
         [
             InlineKeyboardButton(text=f"🎵 Музыка: {music_status}", callback_data="music_settings"),
@@ -61,13 +73,13 @@ def get_process_keyboard(
 def get_mode_selection_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [
-            InlineKeyboardButton(text="⚡ Клиповый Эдит (зумы + динамика)", callback_data="mode_edit_tiktok")
+            InlineKeyboardButton(text="⚡ Клиповый Эдит (Shorts/TikTok)", callback_data="mode_edit_tiktok")
         ],
         [
-            InlineKeyboardButton(text="📺 Длинное для YouTube (16:9 + мягкая речь)", callback_data="mode_youtube_long")
+            InlineKeyboardButton(text="📺 Длинное для YouTube (16:9)", callback_data="mode_youtube_long")
         ],
         [
-            InlineKeyboardButton(text="✂️ Чистка пауз (исходный ракурс, без эффектов)", callback_data="mode_clean_silence")
+            InlineKeyboardButton(text="✂️ Чистка пауз (без зумов и музыки)", callback_data="mode_clean_silence")
         ],
         [
             InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_process")

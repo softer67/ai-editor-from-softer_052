@@ -11,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from config import TEMP_DIR, FFMPEG_PATH
 from bot.keyboards import (
     get_main_keyboard,
+    get_mode_selected_keyboard,
     get_process_keyboard,
     get_mode_selection_keyboard,
     get_music_settings_keyboard,
@@ -55,7 +56,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "• 📺 <b>YouTube (Длинное видео)</b> — плавный темп 16:9, без резких скачков, мягкий фон\n"
         "• ✂️ <b>Чистка пауз и тишины</b> — чистый оригинальный ракурс без эффектов и зумов\n\n"
         "🎵 <b>Музыка:</b> можно включить автоподбор нейросетью или прислать <b>свой аудиофайл</b> прямо в чат!\n\n"
-        "👉 <b>Отправьте видео</b> (файлом или ссылкой на Google Drive / Яндекс.Диск) для старта!"
+        "👉 <b>Выберите режим ниже:</b>"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
 
@@ -78,7 +79,7 @@ async def cb_help(callback: CallbackQuery):
 async def cb_change_mode(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
-        "🎛️ <b>Выберите режим монтажа:</b>",
+        "🎛️ <b>Выберите новый режим монтажа:</b>",
         reply_markup=get_mode_selection_keyboard(),
         parse_mode="HTML"
     )
@@ -105,9 +106,11 @@ async def cb_set_mode(callback: CallbackQuery):
             parse_mode="HTML"
         )
     else:
+        # Убираем лишние кнопки режимов, оставляем только лаконичное меню
         await callback.message.edit_text(
-            f"✅ Выбран режим: <b>{mode_title}</b>\n\n👉 Теперь отправьте видео для монтажа (файл или ссылку)!",
-            reply_markup=get_main_keyboard(),
+            f"✅ Выбран режим: <b>{mode_title}</b>\n\n"
+            "👉 Теперь <b>отправьте видео</b> (файлом до 20 МБ или ссылкой на Google Диск / Яндекс.Диск) для начала монтажа!",
+            reply_markup=get_mode_selected_keyboard(session["mode"]),
             parse_mode="HTML"
         )
 
@@ -154,7 +157,6 @@ async def cb_select_music_preset(callback: CallbackQuery):
         session["custom_music_path"] = PRESET_TRACKS[m_type]["file"]
         await callback.answer(f"Выбран трек: {PRESET_TRACKS[m_type]['name']}")
 
-    # Возврат к экрану процесса
     if session.get("input_video"):
         kb = get_process_keyboard(
             mode=session["mode"],
@@ -164,7 +166,11 @@ async def cb_select_music_preset(callback: CallbackQuery):
         )
         await callback.message.edit_text("⚙️ Настройки музыки сохранены!", reply_markup=kb, parse_mode="HTML")
     else:
-        await callback.message.edit_text("⚙️ Настройки музыки сохранены! Отправьте видео для старта:", reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await callback.message.edit_text(
+            f"⚙️ Настройки музыки сохранены!\nРежим: <b>{MODE_NAMES.get(session['mode'])}</b>\n\n👉 Отправьте видео для старта:",
+            reply_markup=get_mode_selected_keyboard(session["mode"]),
+            parse_mode="HTML"
+        )
 
 @router.callback_query(F.data == "back_to_process")
 async def cb_back_to_process(callback: CallbackQuery):
@@ -179,7 +185,11 @@ async def cb_back_to_process(callback: CallbackQuery):
         )
         await callback.message.edit_text("Готовы к запуску монтажа:", reply_markup=kb, parse_mode="HTML")
     else:
-        await callback.message.edit_text("Главное меню:", reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await callback.message.edit_text(
+            f"Текущий режим: <b>{MODE_NAMES.get(session['mode'])}</b>\n\n👉 Отправьте видео для монтажа:",
+            reply_markup=get_mode_selected_keyboard(session["mode"]),
+            parse_mode="HTML"
+        )
 
 @router.callback_query(F.data == "toggle_sfx")
 async def cb_toggle_sfx(callback: CallbackQuery):
@@ -235,8 +245,9 @@ async def handle_custom_audio(message: Message, bot: Bot):
     else:
         await status_msg.edit_text(
             f"🎵 <b>Трек успешно установлен:</b> <i>{track_title}</i>\n\n"
+            f"Режим: <b>{MODE_NAMES.get(session['mode'])}</b>\n"
             "👉 Теперь отправьте ваше видео (файл или ссылку)!",
-            reply_markup=get_main_keyboard(),
+            reply_markup=get_mode_selected_keyboard(session["mode"]),
             parse_mode="HTML"
         )
 
@@ -345,7 +356,9 @@ async def cb_set_link_type(callback: CallbackQuery):
         else:
             await callback.message.edit_text(
                 f"🔗 <b>Референс стиля принят:</b> <code>{url}</code>\n\n"
+                f"Режим: <b>{MODE_NAMES.get(session['mode'])}</b>\n"
                 "👉 Теперь отправьте ваше исходное видео (файлом до 20 МБ или ссылкой)!",
+                reply_markup=get_mode_selected_keyboard(session["mode"]),
                 parse_mode="HTML"
             )
 
@@ -391,9 +404,8 @@ async def handle_text_or_url(message: Message, state: FSMContext):
                 parse_mode="HTML"
             )
     else:
-        # Проверяем, не просит ли пользователь изменить режим текстом
         text_lower = text.lower()
-        if "эдит" in text_lower or "тиreading" in text_lower or "shorts" in text_lower:
+        if "эдит" in text_lower or "shorts" in text_lower:
             session["mode"] = "edit_tiktok"
         elif "ютуб" in text_lower or "youtube" in text_lower or "длинн" in text_lower:
             session["mode"] = "youtube_long"
@@ -417,8 +429,10 @@ async def handle_text_or_url(message: Message, state: FSMContext):
             )
         else:
             await message.answer(
-                f"📝 <b>Пожелания приняты:</b> <i>{text}</i>\n\n"
+                f"📝 <b>Пожелания приняты:</b> <i>{text}</i>\n"
+                f"Режим: <b>{MODE_NAMES.get(session['mode'])}</b>\n\n"
                 "👉 Теперь отправьте исходное видео для монтажа (файл или ссылку)!",
+                reply_markup=get_mode_selected_keyboard(session["mode"]),
                 parse_mode="HTML"
             )
 
