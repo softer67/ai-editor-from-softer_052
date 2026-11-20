@@ -2,7 +2,11 @@ import asyncio
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from config import FFMPEG_PATH, TEMP_DIR
+from config import FFMPEG_PATH, TEMP_DIR, BASE_DIR
+
+ASSETS_DIR = BASE_DIR / "assets"
+SFX_WHOOSH = ASSETS_DIR / "sfx" / "whoosh.wav"
+MUSIC_BG = ASSETS_DIR / "music" / "lofi_beat.wav"
 
 class VideoProcessor:
     @staticmethod
@@ -10,11 +14,18 @@ class VideoProcessor:
         input_video: Path,
         silences: List[Dict[str, float]],
         output_name: str = "edited_result.mp4",
-        apply_dynamic_zoom: bool = True
+        apply_dynamic_zoom: bool = True,
+        add_sfx_whoosh: bool = True,
+        add_bg_music: bool = False,
+        bg_music_volume: float = 0.08
     ) -> Path:
         """
-        Вырезает немые паузы, добавляет динамические зумы (punch-in)
-        и кодирует в оптимизированный для Telegram (до 50 МБ) формат 720p.
+        Монтаж видео:
+        1. Вырезает немые паузы речи.
+        2. Добавляет динамический зум 1.1x (punch-in) для удержания внимания.
+        3. Накладывает звуковой эффект Whoosh на переходах и зумах.
+        4. Опционально добавляет мягкую фоновую музыку (Lo-Fi) с авто-балансом громкости.
+        5. Оптимизирует под HD 720p для лимита Telegram.
         """
         output_path = TEMP_DIR / output_name
 
@@ -34,7 +45,7 @@ class VideoProcessor:
         # Вычисляем активные интервалы речи
         active_intervals = []
         last_end = 0.0
-        padding = 0.08  # буфер краев речи
+        padding = 0.08  # буфер краев речи (чтобы не обрезать согласные)
 
         for s in silences:
             start_sil = max(0.0, s["start"] + padding)
@@ -53,32 +64,73 @@ class VideoProcessor:
             filter_chunks = []
             concat_inputs = []
 
+            has_whoosh = add_sfx_whoosh and SFX_WHOOSH.exists()
+            has_music = add_bg_music and MUSIC_BG.exists()
+
+            # Формируем цепочку фильтров для каждого активного интервала
             for idx, (st, en) in enumerate(active_intervals):
                 v_label = f"v{idx}"
                 a_label = f"a{idx}"
-                
-                # Чередуем динамический зум 1.1x на склейках
-                if apply_dynamic_zoom and (idx % 2 == 1):
+                chunk_dur = en - st
+
+                # Чередуем зум (каждая вторая склейка)
+                is_zoom_cut = apply_dynamic_zoom and (idx % 2 == 1)
+
+                if is_zoom_cut:
+                    # Динамический зум 1.1x по центру
                     v_filter = f"[0:v]trim=start={st:.2f}:end={en:.2f},setpts=PTS-STARTPTS,scale=1.1*iw:-1,crop=iw/1.1:ih/1.1,scale=-2:720[{v_label}];"
                 else:
                     v_filter = f"[0:v]trim=start={st:.2f}:end={en:.2f},setpts=PTS-STARTPTS,scale=-2:720[{v_label}];"
-                
-                a_filter = f"[0:a]atrim=start={st:.2f}:end={en:.2f},asetpts=PTS-STARTPTS[{a_label}];"
-                
+
+                # Нарезка аудио
+                if is_zoom_cut and has_whoosh:
+                    # Подмешиваем звуковой эффект Whoosh в начало склейки
+                    v_raw_a = f"a_raw_{idx}"
+                    sfx_raw = f"sfx_{idx}"
+                    a_filter = (
+                        f"[0:a]atrim=start={st:.2f}:end={en:.2f},asetpts=PTS-STARTPTS[{v_raw_a}];"
+                        f"[1:a]atrim=0:{chunk_dur:.2f},asetpts=PTS-STARTPTS,volume=0.35[{sfx_raw}];"
+                        f"[{v_raw_a}][{sfx_raw}]amix=inputs=2:duration=first[{a_label}];"
+                    )
+                else:
+                    a_filter = f"[0:a]atrim=start={st:.2f}:end={en:.2f},asetpts=PTS-STARTPTS[{a_label}];"
+
                 filter_chunks.append(v_filter)
                 filter_chunks.append(a_filter)
                 concat_inputs.append(f"[{v_label}][{a_label}]")
 
-            concat_filter = f"{''.join(concat_inputs)}concat=n={len(active_intervals)}:v=1:a=1[outv][outa]"
-            filter_complex = "".join(filter_chunks) + concat_filter
+            # Склейка всех видео и аудио фрагментов
+            concat_filter = f"{''.join(concat_inputs)}concat=n={len(active_intervals)}:v=1:a=1[concat_v][concat_a]"
+            
+            # Если включена фоновая музыка, подмешиваем ее
+            music_input_idx = 2 if has_whoosh else 1
+            if has_music:
+                mix_music_filter = (
+                    f";[{music_input_idx}:a]volume={bg_music_volume}[music_low];"
+                    f"[concat_a][music_low]amix=inputs=2:duration=first:dropout_transition=2[outa]"
+                )
+                final_filter = "".join(filter_chunks) + concat_filter + mix_music_filter
+                map_audio = "[outa]"
+            else:
+                final_filter = "".join(filter_chunks) + concat_filter
+                map_audio = "[concat_a]"
 
             cmd = [
                 FFMPEG_PATH,
                 "-y",
                 "-i", str(input_video),
-                "-filter_complex", filter_complex,
-                "-map", "[outv]",
-                "-map", "[outa]",
+            ]
+
+            if has_whoosh:
+                cmd.extend(["-i", str(SFX_WHOOSH)])
+
+            if has_music:
+                cmd.extend(["-stream_loop", "-1", "-i", str(MUSIC_BG)])
+
+            cmd.extend([
+                "-filter_complex", final_filter,
+                "-map", "[concat_v]",
+                "-map", map_audio,
                 "-c:v", "libx264",
                 "-preset", "faster",
                 "-crf", "26",
@@ -87,10 +139,11 @@ class VideoProcessor:
                 "-c:a", "aac",
                 "-b:a", "128k",
                 str(output_path)
-            ]
+            ])
 
             process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if process.returncode != 0:
+                # Fallback в случае нестандартного аудиоформата
                 fallback_cmd = [
                     FFMPEG_PATH, "-y", "-i", str(input_video),
                     "-vf", "scale=-2:720",

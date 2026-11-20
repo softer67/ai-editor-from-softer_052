@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import TEMP_DIR, FFMPEG_PATH
-from bot.keyboards import get_main_keyboard, get_process_keyboard
+from bot.keyboards import get_main_keyboard, get_process_keyboard, get_settings_keyboard
 from core.downloader import VideoDownloader
 from core.video_analyzer import VideoAnalyzer
 from core.audio_analyzer import AudioAnalyzer
@@ -30,7 +30,9 @@ def get_session(user_id: int) -> dict:
         user_sessions[user_id] = {
             "input_video": None,
             "reference_url": None,
-            "prompt": None
+            "prompt": None,
+            "add_sfx": True,
+            "add_music": False
         }
     return user_sessions[user_id]
 
@@ -40,13 +42,12 @@ async def cmd_start(message: Message, state: FSMContext):
     welcome_text = (
         "🎬 <b>Добро пожаловать в AI-Editor (from softer_052)!</b>\n\n"
         "Я помогу вам автоматически смонтировать видео:\n"
-        "1. ✂️ Вырежу неловкие паузы и «воду»\n"
-        "2. 🔍 Добавлю динамические зумы (удержание внимания)\n"
-        "3. 🔗 Смонтирую под темп любого референса (TikTok, Reels, Shorts)\n\n"
-        "👉 <b>Как отправить видео:</b>\n"
-        "• Файлом в чат (до 20 МБ из-за ограничений Telegram)\n"
-        "• Или ссылкой на диск/видео (Google Drive, Яндекс.Диск, YouTube — без ограничений по размеру!)\n"
-        "• Также можете прикрепить ссылку на референс (TikTok/Reels)."
+        "1. ✂️ <b>Вырезка пауз</b> и вздохов\n"
+        "2. 🔍 <b>Динамические зумы</b> (удержание внимания)\n"
+        "3. 🔊 <b>Звуковые эффекты переходов (Whoosh)</b> на склейках\n"
+        "4. 🎵 <b>Фоновая музыка (Lo-Fi)</b> с авто-балансом под голос\n"
+        "5. 🔗 Монтаж по любому референсу (TikTok, Reels, Shorts)\n\n"
+        "👉 <b>Отправьте видео</b> (файлом или ссылкой на Google Drive / Яндекс.Диск)!"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
 
@@ -55,35 +56,72 @@ async def cb_help(callback: CallbackQuery):
     await callback.answer()
     help_text = (
         "ℹ️ <b>Как пользоваться студией:</b>\n\n"
-        "1. <b>Исходное видео:</b> отправьте файл до 20 МБ прямо в чат ИЛИ пришлите ссылку на видео (Google Диск, YouTube, Яндекс.Диск).\n"
-        "2. <b>Референс (опционально):</b> ссылка на TikTok / Reels для повторения темпа.\n"
+        "1. <b>Исходное видео:</b> отправьте файл до 20 МБ прямо в чат ИЛИ пришлите ссылку (Google Диск, YouTube, Яндекс.Диск).\n"
+        "2. <b>Звук и эффекты:</b> вы можете включать/выключать Whoosh-переходы и фоновую музыку прямо перед запуском!\n"
         "3. Нажмите <b>«🚀 Запустить монтаж»</b>.\n"
-        "4. Получите готовый смонтированный ролик!"
+        "4. Получите готовый динамичный ролик в чат!"
     )
     await callback.message.answer(help_text, parse_mode="HTML")
 
-@router.callback_query(F.data.in_(["preset_reels", "preset_reference", "settings"]))
+@router.callback_query(F.data == "settings")
+async def cb_settings(callback: CallbackQuery):
+    await callback.answer()
+    session = get_session(callback.from_user.id)
+    kb = get_settings_keyboard(session["add_sfx"], session["add_music"])
+    await callback.message.edit_text(
+        "⚙️ <b>Настройки звука и монтажа:</b>\n\n"
+        "Нажимайте на кнопки, чтобы включить или выключить эффекты:",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data == "back_to_menu")
+async def cb_back_to_menu(callback: CallbackQuery):
+    await callback.answer()
+    welcome_text = (
+        "🎬 <b>Главное меню AI-Editor:</b>\n\n"
+        "Отправьте мне видео (файл или ссылку) для запуска монтажа:"
+    )
+    await callback.message.edit_text(welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data.in_(["toggle_sfx", "toggle_music"]))
+async def cb_toggle_audio(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    session = get_session(user_id)
+
+    if callback.data == "toggle_sfx":
+        session["add_sfx"] = not session.get("add_sfx", True)
+        status = "включен ✅" if session["add_sfx"] else "выключен ❌"
+        await callback.answer(f"Звук Whoosh {status}")
+    elif callback.data == "toggle_music":
+        session["add_music"] = not session.get("add_music", False)
+        status = "включена ✅" if session["add_music"] else "выключена ❌"
+        await callback.answer(f"Фоновая музыка {status}")
+
+    # Обновляем клавиатуру в зависимости от контекста сообщения
+    if session.get("input_video"):
+        kb = get_process_keyboard(session["add_sfx"], session["add_music"])
+    else:
+        kb = get_settings_keyboard(session["add_sfx"], session["add_music"])
+    
+    try:
+        await callback.message.edit_reply_markup(reply_markup=kb)
+    except Exception:
+        pass
+
+@router.callback_query(F.data.in_(["preset_reels", "preset_reference"]))
 async def cb_presets(callback: CallbackQuery):
     await callback.answer()
     if callback.data == "preset_reels":
         await callback.message.answer(
             "⚡ <b>Выбран пресет: Быстрый Reels / Shorts</b>\n"
-            "Авто-удаление пауз + динамические зумы 1.1x.\n"
+            "Авто-удаление пауз + динамические зумы 1.1x + Whoosh эффекты.\n"
             "Отправьте видео или ссылку на него!",
             parse_mode="HTML"
         )
     elif callback.data == "preset_reference":
         await callback.message.answer(
             "🔗 Отправьте ссылку на видео-референс (TikTok, Reels или Shorts):",
-            parse_mode="HTML"
-        )
-    elif callback.data == "settings":
-        await callback.message.answer(
-            "⚙️ <b>Текущие настройки:</b>\n"
-            "• Порог тишины: <code>-30 dB</code>\n"
-            "• Мин. пауза: <code>0.5 сек</code>\n"
-            "• Динамический зум: <code>1.1x</code>\n"
-            "• Лимит прямого файла Telegram: <code>20 МБ</code> (ссылки без лимита)",
             parse_mode="HTML"
         )
 
@@ -127,11 +165,8 @@ async def handle_video(message: Message, bot: Bot, state: FSMContext):
 
         await status_msg.edit_text(
             f"✅ <b>Видео успешно получено ({round(file_size/(1024*1024), 1)} МБ)!</b>{ref_status}\n\n"
-            "Теперь вы можете:\n"
-            "• Отправить ссылку на референс (TikTok / Reels / Shorts)\n"
-            "• Написать текстовые пожелания к монтажу\n"
-            "• Или сразу нажать <b>«🚀 Запустить монтаж»</b>:",
-            reply_markup=get_process_keyboard(),
+            "Настройте звуковые эффекты кнопками ниже и запустите монтаж:",
+            reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
             parse_mode="HTML"
         )
     except Exception as e:
@@ -160,8 +195,8 @@ async def cb_set_link_type(callback: CallbackQuery):
             session["input_video"] = downloaded
             await msg.edit_text(
                 "✅ <b>Исходное видео успешно скачано!</b>\n\n"
-                "Теперь можете прикрепить ссылку на референс, написать пожелания или сразу запустить монтаж:",
-                reply_markup=get_process_keyboard(),
+                "Настройте звуковые эффекты и нажмите запуск:",
+                reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
                 parse_mode="HTML"
             )
         except Exception as e:
@@ -172,7 +207,7 @@ async def cb_set_link_type(callback: CallbackQuery):
             await callback.message.edit_text(
                 f"🔗 <b>Референс стиля принят:</b> <code>{url}</code>\n"
                 "Видео и референс готовы к обработке!",
-                reply_markup=get_process_keyboard(),
+                reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
                 parse_mode="HTML"
             )
         else:
@@ -200,7 +235,7 @@ async def handle_text_or_url(message: Message, state: FSMContext):
             await message.answer(
                 f"🔗 <b>Референс стиля принят:</b> <code>{url}</code>\n"
                 "Все готово к монтажу!",
-                reply_markup=get_process_keyboard(),
+                reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
                 parse_mode="HTML"
             )
         else:
@@ -224,7 +259,7 @@ async def handle_text_or_url(message: Message, state: FSMContext):
             await message.answer(
                 f"📝 <b>Пожелания приняты:</b> <i>{text}</i>\n"
                 "Нажмите кнопку ниже для запуска монтажа:",
-                reply_markup=get_process_keyboard(),
+                reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
                 parse_mode="HTML"
             )
         else:
@@ -236,7 +271,6 @@ async def handle_text_or_url(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "start_render")
 async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
-    # Сразу отвечаем на callback, чтобы Telegram не выдавал Timeout
     await callback.answer("Запускаю процесс монтажа...")
     
     user_id = callback.from_user.id
@@ -248,6 +282,8 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
 
     input_video = session["input_video"]
     ref_url = session.get("reference_url")
+    add_sfx = session.get("add_sfx", True)
+    add_music = session.get("add_music", False)
     
     status_msg = await callback.message.edit_text("🔍 <b>Шаг 1/3:</b> Анализирую структуру речи и пауз...", parse_mode="HTML")
     
@@ -264,11 +300,16 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
         await status_msg.edit_text("✂️ <b>Шаг 2/3:</b> Нахожу немые паузы для вырезания...", parse_mode="HTML")
         silences = await AudioAnalyzer.detect_silence(input_video)
 
+        sfx_text = "Включены (Whoosh 🔊)" if add_sfx else "Выключены"
+        music_text = "Включена (Lo-Fi 🎵)" if add_music else "Выключена"
+
         await status_msg.edit_text(
             f"🎬 <b>Шаг 3/3:</b> Монтирую ролик...\n"
             f"• Найдено пауз: <b>{len(silences)}</b>\n"
-            f"• Динамический зум: <b>Включен</b>\n"
-            f"Идет рендеринг через FFmpeg (займет ~1–2 мин)...",
+            f"• Динамический зум: <b>Включен (1.1x)</b>\n"
+            f"• SFX Переходы: <b>{sfx_text}</b>\n"
+            f"• Фоновая музыка: <b>{music_text}</b>\n\n"
+            f"Идет рендеринг через FFmpeg...",
             parse_mode="HTML"
         )
         
@@ -277,15 +318,16 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
             input_video=input_video,
             silences=silences,
             output_name=output_name,
-            apply_dynamic_zoom=True
+            apply_dynamic_zoom=True,
+            add_sfx_whoosh=add_sfx,
+            add_bg_music=add_music
         )
 
-        # Проверка размера готового файла перед отправкой в Telegram
         final_size = result_path.stat().st_size
-        max_upload_size = 49 * 1024 * 1024  # 49 МБ (лимит Telegram Bot API 50 МБ)
+        max_upload_size = 49 * 1024 * 1024
 
         if final_size > max_upload_size:
-            await status_msg.edit_text("📦 Сжимаю видео под лимит Telegram (до 50 МБ)...", parse_mode="HTML")
+            await status_msg.edit_text("📦 Оптимизирую видео под лимит Telegram (до 50 МБ)...", parse_mode="HTML")
             compressed_path = TEMP_DIR / f"result_{user_id}_compressed.mp4"
             cmd_compress = [
                 FFMPEG_PATH, "-y", "-i", str(result_path),
@@ -306,7 +348,9 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
         caption = (
             "✨ <b>Ваше видео готово!</b>\n\n"
             f"• Вырезано немых пауз: <b>{len(silences)}</b>\n"
-            f"• Темп склеек: <b>{pace_str}</b>\n\n"
+            f"• SFX переходы (Whoosh): <b>{'Да 🔊' if add_sfx else 'Нет'}</b>\n"
+            f"• Фоновая музыка: <b>{'Да 🎵' if add_music else 'Нет'}</b>\n"
+            f"• Стиль: <b>{pace_str}</b>\n\n"
             "Смонтировано в <b>ai-editor from softer_052</b>"
         )
         await callback.message.answer_video(video=video_file, caption=caption, parse_mode="HTML")
