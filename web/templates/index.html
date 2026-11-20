@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AI-Editor Studio — Загрузка видео до 10 ГБ</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body {
+      background: #0d1117;
+      color: #f0f6fc;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 16px;
+      padding: 28px;
+      max-width: 520px;
+      width: 100%;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.4);
+      text-align: center;
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, #58a6ff, #bc8cff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #8b949e;
+      margin-bottom: 24px;
+    }
+    .dropzone {
+      border: 2px dashed #388bfd;
+      border-radius: 12px;
+      padding: 36px 20px;
+      background: rgba(56, 139, 253, 0.04);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      margin-bottom: 20px;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      background: rgba(56, 139, 253, 0.12);
+      border-color: #58a6ff;
+    }
+    .dropzone-icon {
+      font-size: 42px;
+      margin-bottom: 12px;
+    }
+    .dropzone-text {
+      font-size: 16px;
+      font-weight: 600;
+      color: #c9d1d9;
+      margin-bottom: 6px;
+    }
+    .dropzone-hint {
+      font-size: 12px;
+      color: #8b949e;
+    }
+    input[type="file"] { display: none; }
+    
+    .progress-section {
+      display: none;
+      margin-top: 20px;
+      text-align: left;
+    }
+    .progress-bar-bg {
+      background: #21262d;
+      border-radius: 8px;
+      height: 12px;
+      width: 100%;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .progress-bar-fill {
+      background: linear-gradient(90deg, #238636, #2ea043);
+      height: 100%;
+      width: 0%;
+      transition: width 0.15s ease;
+    }
+    .stats-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      color: #8b949e;
+      margin-bottom: 4px;
+    }
+    .eta-highlight {
+      color: #58a6ff;
+      font-weight: 600;
+    }
+    .success-card {
+      display: none;
+      padding: 20px;
+      border-radius: 12px;
+      background: rgba(46, 160, 67, 0.15);
+      border: 1px solid #2ea043;
+      margin-top: 20px;
+    }
+    .success-title {
+      font-size: 17px;
+      color: #3fb950;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .btn {
+      display: inline-block;
+      margin-top: 14px;
+      background: #238636;
+      color: #fff;
+      padding: 12px 24px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 15px;
+      border: none;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn:hover { background: #2ea043; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🚀 Студия загрузки видео до 10 ГБ</h1>
+    <p class="subtitle">Прямая передача тяжелых 4K/60fps видео напрямую в AI-Editor</p>
+
+    <div class="dropzone" id="dropzone">
+      <div class="dropzone-icon">📥</div>
+      <div class="dropzone-text">Нажмите или перетащите видео сюда</div>
+      <div class="dropzone-hint">Поддерживаются файлы любого размера (до 10 000 МБ)</div>
+      <input type="file" id="fileInput" accept="video/*">
+    </div>
+
+    <div class="progress-section" id="progressSection">
+      <div class="stats-row">
+        <span id="fileName">video.mp4</span>
+        <span id="percentLabel">0%</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progressBar"></div>
+      </div>
+      <div class="stats-row">
+        <span id="sizeLabel">0 МБ / 0 МБ</span>
+        <span id="speedLabel">0 МБ/с</span>
+      </div>
+      <div class="stats-row" style="margin-top: 6px;">
+        <span>Примерное время:</span>
+        <span class="eta-highlight" id="etaLabel">(вычисляется...)</span>
+      </div>
+    </div>
+
+    <div class="success-card" id="successCard">
+      <div class="success-title">✅ Видео успешно загружено на сервер!</div>
+      <p style="font-size: 14px; color: #c9d1d9;">Бот в Telegram уже получил файл и готов к монтажу.</p>
+      <a href="https://t.me/ai_editor_from_softer052_bot" class="btn" target="_blank">📱 Открыть Telegram и запустить монтаж</a>
+    </div>
+  </div>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const userId = urlParams.get('user_id') || '6493650695';
+
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const progressSection = document.getElementById('progressSection');
+    const progressBar = document.getElementById('progressBar');
+    const percentLabel = document.getElementById('percentLabel');
+    const fileNameLabel = document.getElementById('fileName');
+    const sizeLabel = document.getElementById('sizeLabel');
+    const speedLabel = document.getElementById('speedLabel');
+    const etaLabel = document.getElementById('etaLabel');
+    const successCard = document.getElementById('successCard');
+
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length) uploadFile(fileInput.files[0]);
+    });
+
+    function formatBytes(bytes) {
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КБ';
+      if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
+      return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' ГБ';
+    }
+
+    function formatTime(seconds) {
+      if (seconds < 60) return `(осталось ~${Math.round(seconds)} сек)`;
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.round(seconds % 60);
+      return `(осталось ~${mins} мин ${secs} сек)`;
+    }
+
+    function uploadFile(file) {
+      dropzone.style.display = 'none';
+      progressSection.style.display = 'block';
+      fileNameLabel.innerText = file.name;
+
+      const xhr = new XMLHttpRequest();
+      const startTime = Date.now();
+      let lastLoaded = 0;
+      let lastTime = startTime;
+
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const percent = Math.round((e.loaded / e.total) * 100);
+        progressBar.style.width = percent + '%';
+        percentLabel.innerText = percent + '%';
+        sizeLabel.innerText = `${formatBytes(e.loaded)} / ${formatBytes(e.total)}`;
+
+        const now = Date.now();
+        const timeDiff = (now - startTime) / 1000;
+        if (timeDiff > 0.5) {
+          const speed = e.loaded / timeDiff; // байт/сек
+          speedLabel.innerText = `${(speed / (1024 * 1024)).toFixed(1)} МБ/с`;
+          
+          const remainingBytes = e.total - e.loaded;
+          const etaSeconds = remainingBytes / speed;
+          etaLabel.innerText = formatTime(etaSeconds);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          progressSection.style.display = 'none';
+          successCard.style.display = 'block';
+        } else {
+          alert('Ошибка загрузки: ' + xhr.responseText);
+          dropzone.style.display = 'block';
+          progressSection.style.display = 'none';
+        }
+      };
+
+      xhr.onerror = () => {
+        alert('Сетевая ошибка при загрузке.');
+        dropzone.style.display = 'block';
+        progressSection.style.display = 'none';
+      };
+
+      const formData = new FormData();
+      formData.append('video', file);
+      formData.append('user_id', userId);
+
+      xhr.open('POST', '/api/upload');
+      xhr.send(formData);
+    }
+  </script>
+</body>
+</html>

@@ -18,6 +18,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✂️ Просто убрать паузы и тишину", callback_data="mode_clean_silence")
         ],
         [
+            InlineKeyboardButton(text="🌐 Загрузить видео > 2 ГБ (до 10 ГБ)", callback_data="open_web_uploader")
+        ],
+        [
             InlineKeyboardButton(text="⚙️ Музыка и звуки", callback_data="music_settings"),
             InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")
         ]
@@ -26,6 +29,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
 
 def get_mode_selected_keyboard(current_mode: str = "edit_tiktok") -> InlineKeyboardMarkup:
     keyboard = [
+        [
+            InlineKeyboardButton(text="🌐 Загрузить видео > 2 ГБ (до 10 ГБ)", callback_data="open_web_uploader")
+        ],
         [
             InlineKeyboardButton(text="🔄 Сменить режим монтажа", callback_data="change_mode")
         ],

@@ -56,7 +56,8 @@ async def cmd_start(message: Message, state: FSMContext):
         "• ⚡ <b>Клиповый Эдит (Shorts/TikTok)</b> — ультрадинамика, зумы 1.15x, Whoosh, драйв\n"
         "• 📺 <b>YouTube (Длинное видео)</b> — плавный темп 16:9, без резких скачков, мягкий фон\n"
         "• ✂️ <b>Чистка пауз и тишины</b> — чистый оригинальный ракурс без эффектов и зумов\n\n"
-        "🚀 <b>Видео любого размера (даже 100+ МБ) можно отправлять прямо файлом в чат!</b> Больше не нужно загружать на диски.\n\n"
+        "🚀 <b>Видео до 2 ГБ можно отправлять прямо файлом в чат!</b>\n"
+        "🌐 Для гигантских видео <b>от 2 до 10 ГБ</b> есть прямая веб-страница загрузки.\n\n"
         "👉 <b>Выберите режим ниже:</b>"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
@@ -67,7 +68,8 @@ async def cb_help(callback: CallbackQuery):
     help_text = (
         "ℹ️ <b>Возможности студии:</b>\n\n"
         "1. <b>Прямая отправка видео любого размера:</b>\n"
-        "• Бот скачивает видео любого веса (до 2 ГБ) напрямую из Telegram с отображением процентов и таймера.\n\n"
+        "• До 2 ГБ — прямо в чат Telegram с таймером в скобочках.\n"
+        "• До 10 ГБ — через веб-сайт быстрой загрузки по локальной сети.\n\n"
         "2. <b>Режимы:</b>\n"
         "• <code>Эдит</code> — быстрый нарезной клип с зумами и звуками.\n"
         "• <code>YouTube</code> — полноформатное длинное видео с мягкой чисткой пауз.\n"
@@ -77,6 +79,32 @@ async def cb_help(callback: CallbackQuery):
         "• Либо выберите <b>AI-подбор</b> — бот сам выберет трек под видео."
     )
     await callback.message.answer(help_text, parse_mode="HTML")
+
+@router.callback_query(F.data == "open_web_uploader")
+async def cb_open_web_uploader(callback: CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    local_ip = "192.168.0.108"
+    web_url = f"http://{local_ip}:8080/upload?user_id={user_id}"
+    
+    msg_text = (
+        "🌐 <b>Студия загрузки видео до 10 ГБ:</b>\n\n"
+        "Если ваше видео весит больше 2 ГБ (или 4K 60fps), откройте страницу загрузки:\n\n"
+        f"👉 <a href=\"{web_url}\"><b>{web_url}</b></a>\n\n"
+        "• 📱 <b>С телефона:</b> откройте ссылку в мобильном браузере (при подключении к домашнему Wi-Fi)\n"
+        "• 💻 <b>С компьютера:</b> <a href=\"http://localhost:8080/upload\"><b>http://localhost:8080/upload</b></a>\n"
+        "• ⏱️ На странице работает живая шкала, скорость и <b>время загрузки в скобочках</b>!\n"
+        "• После загрузки бот мгновенно получит видео и напишет вам в этот чат."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🌐 Открыть сайт загрузки (до 10 ГБ)", url=web_url)
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_process")
+        ]
+    ])
+    await callback.message.answer(msg_text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
 @router.callback_query(F.data == "change_mode")
 async def cb_change_mode(callback: CallbackQuery):
@@ -111,7 +139,7 @@ async def cb_set_mode(callback: CallbackQuery):
     else:
         await callback.message.edit_text(
             f"✅ Выбран режим: <b>{mode_title}</b>\n\n"
-            "👉 Теперь <b>отправьте видео</b> (файлом любого размера прямо в чат или ссылкой)!",
+            "👉 Теперь <b>отправьте видео</b> (файлом прямо в чат или через кнопку загрузки до 10 ГБ):",
             reply_markup=get_mode_selected_keyboard(session["mode"]),
             parse_mode="HTML"
         )
@@ -264,7 +292,21 @@ async def handle_video(message: Message, bot: Bot, state: FSMContext):
     file_size = getattr(document, "file_size", 0) or 0
     size_mb = round(file_size / (1024 * 1024), 1)
 
-    # Примерная оценка времени на старте (~2 МБ/с)
+    # Если файл больше 2 ГБ, отправляем ссылку на веб-загрузчик до 10 ГБ
+    if file_size > 2000 * 1024 * 1024:
+        user_id = message.from_user.id
+        local_ip = "192.168.0.108"
+        web_url = f"http://{local_ip}:8080/upload?user_id={user_id}"
+        await message.answer(
+            f"⚠️ <b>Видео превышает лимит Telegram ({size_mb} МБ > 2 ГБ)!</b>\n\n"
+            "Сам Telegram не пропускает файлы больше 2 ГБ через чат.\n\n"
+            "💡 <b>Загрузите его через нашу быструю веб-страницу (до 10 ГБ):</b>\n"
+            f"👉 <a href=\"{web_url}\"><b>{web_url}</b></a>\n\n"
+            "Там есть шкала с примерным временем в скобочках!",
+            parse_mode="HTML"
+        )
+        return
+
     est_sec = max(3, int(file_size / (2.0 * 1024 * 1024)))
     if est_sec > 60:
         est_str = f"~{est_sec // 60} мин {est_sec % 60} сек"
