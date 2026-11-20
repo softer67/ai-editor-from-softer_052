@@ -9,11 +9,18 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import TEMP_DIR, FFMPEG_PATH
-from bot.keyboards import get_main_keyboard, get_process_keyboard, get_settings_keyboard
+from bot.keyboards import (
+    get_main_keyboard,
+    get_process_keyboard,
+    get_mode_selection_keyboard,
+    get_music_settings_keyboard,
+    MODE_NAMES
+)
 from core.downloader import VideoDownloader
 from core.video_analyzer import VideoAnalyzer
 from core.audio_analyzer import AudioAnalyzer
 from core.video_processor import VideoProcessor
+from core.music_selector import MusicSelector, PRESET_TRACKS
 
 router = Router()
 
@@ -31,8 +38,10 @@ def get_session(user_id: int) -> dict:
             "input_video": None,
             "reference_url": None,
             "prompt": None,
-            "add_sfx": True,
-            "add_music": False
+            "mode": "edit_tiktok",             # "edit_tiktok" | "youtube_long" | "clean_silence"
+            "custom_music_path": None,
+            "use_ai_music": True,
+            "add_sfx": True
         }
     return user_sessions[user_id]
 
@@ -40,14 +49,13 @@ def get_session(user_id: int) -> dict:
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     welcome_text = (
-        "🎬 <b>Добро пожаловать в AI-Editor (from softer_052)!</b>\n\n"
-        "Я помогу вам автоматически смонтировать видео:\n"
-        "1. ✂️ <b>Вырезка пауз</b> и вздохов\n"
-        "2. 🔍 <b>Динамические зумы</b> (удержание внимания)\n"
-        "3. 🔊 <b>Звуковые эффекты переходов (Whoosh)</b> на склейках\n"
-        "4. 🎵 <b>Фоновая музыка (Lo-Fi)</b> с авто-балансом под голос\n"
-        "5. 🔗 Монтаж по любому референсу (TikTok, Reels, Shorts)\n\n"
-        "👉 <b>Отправьте видео</b> (файлом или ссылкой на Google Drive / Яндекс.Диск)!"
+        "🎬 <b>Добро пожаловать в AI-Editor Studio (from softer_052)!</b>\n\n"
+        "Выберите желаемый <b>режим монтажа</b>:\n"
+        "• ⚡ <b>Клиповый Эдит (Shorts/TikTok)</b> — ультрадинамика, зумы 1.15x, Whoosh, драйв\n"
+        "• 📺 <b>YouTube (Длинное видео)</b> — плавный темп 16:9, без резких скачков, мягкий фон\n"
+        "• ✂️ <b>Чистка пауз и тишины</b> — чистый оригинальный ракурс без эффектов и зумов\n\n"
+        "🎵 <b>Музыка:</b> можно включить автоподбор нейросетью или прислать <b>свой аудиофайл</b> прямо в чат!\n\n"
+        "👉 <b>Отправьте видео</b> (файлом или ссылкой на Google Drive / Яндекс.Диск) для старта!"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
 
@@ -55,73 +63,180 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cb_help(callback: CallbackQuery):
     await callback.answer()
     help_text = (
-        "ℹ️ <b>Как пользоваться студией:</b>\n\n"
-        "1. <b>Исходное видео:</b> отправьте файл до 20 МБ прямо в чат ИЛИ пришлите ссылку (Google Диск, YouTube, Яндекс.Диск).\n"
-        "2. <b>Звук и эффекты:</b> вы можете включать/выключать Whoosh-переходы и фоновую музыку прямо перед запуском!\n"
-        "3. Нажмите <b>«🚀 Запустить монтаж»</b>.\n"
-        "4. Получите готовый динамичный ролик в чат!"
+        "ℹ️ <b>Возможности студии:</b>\n\n"
+        "1. <b>Режимы:</b>\n"
+        "• <code>Эдит</code> — быстрый нарезной клип с зумами и звуками.\n"
+        "• <code>YouTube</code> — полноформатное длинное видео с мягкой чисткой пауз.\n"
+        "• <code>Чистка</code> — вырезает немые паузы, вздохи и заминки без изменения картинки.\n\n"
+        "2. <b>Музыка:</b>\n"
+        "• Отправьте любой <b>аудиофайл или голосовое</b> в чат, и бот возьмет его как фоновый трек!\n"
+        "• Либо выберите <b>AI-подбор</b> — бот сам выберет трек под тематику видео (Phonk, Lo-Fi, Upbeat)."
     )
     await callback.message.answer(help_text, parse_mode="HTML")
 
-@router.callback_query(F.data == "settings")
-async def cb_settings(callback: CallbackQuery):
+@router.callback_query(F.data == "change_mode")
+async def cb_change_mode(callback: CallbackQuery):
     await callback.answer()
-    session = get_session(callback.from_user.id)
-    kb = get_settings_keyboard(session["add_sfx"], session["add_music"])
     await callback.message.edit_text(
-        "⚙️ <b>Настройки звука и монтажа:</b>\n\n"
-        "Нажимайте на кнопки, чтобы включить или выключить эффекты:",
-        reply_markup=kb,
+        "🎛️ <b>Выберите режим монтажа:</b>",
+        reply_markup=get_mode_selection_keyboard(),
         parse_mode="HTML"
     )
 
-@router.callback_query(F.data == "back_to_menu")
-async def cb_back_to_menu(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("mode_"))
+async def cb_set_mode(callback: CallbackQuery):
     await callback.answer()
-    welcome_text = (
-        "🎬 <b>Главное меню AI-Editor:</b>\n\n"
-        "Отправьте мне видео (файл или ссылку) для запуска монтажа:"
-    )
-    await callback.message.edit_text(welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    mode = callback.data.replace("mode_", "")
+    session = get_session(callback.from_user.id)
+    session["mode"] = mode
 
-@router.callback_query(F.data.in_(["toggle_sfx", "toggle_music"]))
-async def cb_toggle_audio(callback: CallbackQuery):
+    mode_title = MODE_NAMES.get(mode, mode)
+    
+    if session.get("input_video"):
+        kb = get_process_keyboard(
+            mode=session["mode"],
+            has_custom_music=session.get("custom_music_path") is not None,
+            use_ai_music=session.get("use_ai_music", True),
+            add_sfx=session.get("add_sfx", True)
+        )
+        await callback.message.edit_text(
+            f"✅ Режим изменен на: <b>{mode_title}</b>\n\nГотовы к монтажу:",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    else:
+        await callback.message.edit_text(
+            f"✅ Выбран режим: <b>{mode_title}</b>\n\n👉 Теперь отправьте видео для монтажа (файл или ссылку)!",
+            reply_markup=get_main_keyboard(),
+            parse_mode="HTML"
+        )
+
+@router.callback_query(F.data == "music_settings")
+async def cb_music_settings(callback: CallbackQuery):
+    await callback.answer()
+    session = get_session(callback.from_user.id)
+    has_custom = session.get("custom_music_path") is not None
+    use_ai = session.get("use_ai_music", True)
+
+    await callback.message.edit_text(
+        "🎵 <b>Управление музыкой:</b>\n\n"
+        "Вы можете доверить выбор нейросети, выбрать жанр вручную или прислать свой трек файлом в чат:",
+        reply_markup=get_music_settings_keyboard(has_custom, use_ai),
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data.startswith("music_"))
+async def cb_select_music_preset(callback: CallbackQuery):
+    m_type = callback.data.replace("music_", "")
     user_id = callback.from_user.id
     session = get_session(user_id)
 
-    if callback.data == "toggle_sfx":
-        session["add_sfx"] = not session.get("add_sfx", True)
-        status = "включен ✅" if session["add_sfx"] else "выключен ❌"
-        await callback.answer(f"Звук Whoosh {status}")
-    elif callback.data == "toggle_music":
-        session["add_music"] = not session.get("add_music", False)
-        status = "включена ✅" if session["add_music"] else "выключена ❌"
-        await callback.answer(f"Фоновая музыка {status}")
+    if m_type == "how_to_upload":
+        await callback.answer()
+        await callback.message.answer(
+            "💡 <b>Как добавить свою музыку:</b>\n"
+            "Просто отправьте в чат боту любой <b>MP3 файл, трек или голосовое</b>. "
+            "Бот автоматически подстроит его громкость и наложит на видео!",
+            parse_mode="HTML"
+        )
+        return
 
-    # Обновляем клавиатуру в зависимости от контекста сообщения
+    if m_type == "ai":
+        session["use_ai_music"] = True
+        session["custom_music_path"] = None
+        await callback.answer("Включен AI-подбор музыки 🤖")
+    elif m_type == "off":
+        session["use_ai_music"] = False
+        session["custom_music_path"] = None
+        await callback.answer("Музыка выключена ❌")
+    elif m_type in PRESET_TRACKS:
+        session["use_ai_music"] = False
+        session["custom_music_path"] = PRESET_TRACKS[m_type]["file"]
+        await callback.answer(f"Выбран трек: {PRESET_TRACKS[m_type]['name']}")
+
+    # Возврат к экрану процесса
     if session.get("input_video"):
-        kb = get_process_keyboard(session["add_sfx"], session["add_music"])
+        kb = get_process_keyboard(
+            mode=session["mode"],
+            has_custom_music=session.get("custom_music_path") is not None,
+            use_ai_music=session.get("use_ai_music", True),
+            add_sfx=session.get("add_sfx", True)
+        )
+        await callback.message.edit_text("⚙️ Настройки музыки сохранены!", reply_markup=kb, parse_mode="HTML")
     else:
-        kb = get_settings_keyboard(session["add_sfx"], session["add_music"])
-    
+        await callback.message.edit_text("⚙️ Настройки музыки сохранены! Отправьте видео для старта:", reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "back_to_process")
+async def cb_back_to_process(callback: CallbackQuery):
+    await callback.answer()
+    session = get_session(callback.from_user.id)
+    if session.get("input_video"):
+        kb = get_process_keyboard(
+            mode=session["mode"],
+            has_custom_music=session.get("custom_music_path") is not None,
+            use_ai_music=session.get("use_ai_music", True),
+            add_sfx=session.get("add_sfx", True)
+        )
+        await callback.message.edit_text("Готовы к запуску монтажа:", reply_markup=kb, parse_mode="HTML")
+    else:
+        await callback.message.edit_text("Главное меню:", reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "toggle_sfx")
+async def cb_toggle_sfx(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    session = get_session(user_id)
+    session["add_sfx"] = not session.get("add_sfx", True)
+    status = "включен ✅" if session["add_sfx"] else "выключен ❌"
+    await callback.answer(f"Whoosh {status}")
+
+    kb = get_process_keyboard(
+        mode=session["mode"],
+        has_custom_music=session.get("custom_music_path") is not None,
+        use_ai_music=session.get("use_ai_music", True),
+        add_sfx=session["add_sfx"]
+    )
     try:
         await callback.message.edit_reply_markup(reply_markup=kb)
     except Exception:
         pass
 
-@router.callback_query(F.data.in_(["preset_reels", "preset_reference"]))
-async def cb_presets(callback: CallbackQuery):
-    await callback.answer()
-    if callback.data == "preset_reels":
-        await callback.message.answer(
-            "⚡ <b>Выбран пресет: Быстрый Reels / Shorts</b>\n"
-            "Авто-удаление пауз + динамические зумы 1.1x + Whoosh эффекты.\n"
-            "Отправьте видео или ссылку на него!",
+# Прием пользовательской музыки (Audio / Voice)
+@router.message(F.audio | F.voice)
+async def handle_custom_audio(message: Message, bot: Bot):
+    user_id = message.from_user.id
+    session = get_session(user_id)
+
+    file_obj = message.audio or message.voice
+    status_msg = await message.answer("⏳ Сохраняю ваш музыкальный трек...")
+
+    file_info = await bot.get_file(file_obj.file_id)
+    music_ext = Path(file_info.file_path).suffix or ".mp3"
+    music_dest = TEMP_DIR / f"user_{user_id}_custom_music{music_ext}"
+
+    await bot.download_file(file_info.file_path, destination=music_dest)
+    session["custom_music_path"] = music_dest
+    session["use_ai_music"] = False
+
+    track_title = getattr(message.audio, "title", "Пользовательский трек") if message.audio else "Голосовая дорожка"
+
+    if session.get("input_video"):
+        kb = get_process_keyboard(
+            mode=session["mode"],
+            has_custom_music=True,
+            use_ai_music=False,
+            add_sfx=session.get("add_sfx", True)
+        )
+        await status_msg.edit_text(
+            f"🎵 <b>Трек успешно установлен:</b> <i>{track_title}</i>\n"
+            "Он будет сведен с видео на фоне голоса. Нажмите старт:",
+            reply_markup=kb,
             parse_mode="HTML"
         )
-    elif callback.data == "preset_reference":
-        await callback.message.answer(
-            "🔗 Отправьте ссылку на видео-референс (TikTok, Reels или Shorts):",
+    else:
+        await status_msg.edit_text(
+            f"🎵 <b>Трек успешно установлен:</b> <i>{track_title}</i>\n\n"
+            "👉 Теперь отправьте ваше видео (файл или ссылку)!",
+            reply_markup=get_main_keyboard(),
             parse_mode="HTML"
         )
 
@@ -165,8 +280,14 @@ async def handle_video(message: Message, bot: Bot, state: FSMContext):
 
         await status_msg.edit_text(
             f"✅ <b>Видео успешно получено ({round(file_size/(1024*1024), 1)} МБ)!</b>{ref_status}\n\n"
-            "Настройте звуковые эффекты кнопками ниже и запустите монтаж:",
-            reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
+            f"Текущий режим: <b>{MODE_NAMES.get(session['mode'], '⚡ Эдит')}</b>\n"
+            "Выберите параметры и нажмите <b>«🚀 Запустить монтаж»</b>:",
+            reply_markup=get_process_keyboard(
+                mode=session["mode"],
+                has_custom_music=session.get("custom_music_path") is not None,
+                use_ai_music=session.get("use_ai_music", True),
+                add_sfx=session.get("add_sfx", True)
+            ),
             parse_mode="HTML"
         )
     except Exception as e:
@@ -195,8 +316,14 @@ async def cb_set_link_type(callback: CallbackQuery):
             session["input_video"] = downloaded
             await msg.edit_text(
                 "✅ <b>Исходное видео успешно скачано!</b>\n\n"
-                "Настройте звуковые эффекты и нажмите запуск:",
-                reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
+                f"Режим: <b>{MODE_NAMES.get(session['mode'])}</b>\n"
+                "Нажмите запуск или настройте параметры:",
+                reply_markup=get_process_keyboard(
+                    mode=session["mode"],
+                    has_custom_music=session.get("custom_music_path") is not None,
+                    use_ai_music=session.get("use_ai_music", True),
+                    add_sfx=session.get("add_sfx", True)
+                ),
                 parse_mode="HTML"
             )
         except Exception as e:
@@ -207,7 +334,12 @@ async def cb_set_link_type(callback: CallbackQuery):
             await callback.message.edit_text(
                 f"🔗 <b>Референс стиля принят:</b> <code>{url}</code>\n"
                 "Видео и референс готовы к обработке!",
-                reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
+                reply_markup=get_process_keyboard(
+                    mode=session["mode"],
+                    has_custom_music=session.get("custom_music_path") is not None,
+                    use_ai_music=session.get("use_ai_music", True),
+                    add_sfx=session.get("add_sfx", True)
+                ),
                 parse_mode="HTML"
             )
         else:
@@ -235,7 +367,12 @@ async def handle_text_or_url(message: Message, state: FSMContext):
             await message.answer(
                 f"🔗 <b>Референс стиля принят:</b> <code>{url}</code>\n"
                 "Все готово к монтажу!",
-                reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
+                reply_markup=get_process_keyboard(
+                    mode=session["mode"],
+                    has_custom_music=session.get("custom_music_path") is not None,
+                    use_ai_music=session.get("use_ai_music", True),
+                    add_sfx=session.get("add_sfx", True)
+                ),
                 parse_mode="HTML"
             )
         else:
@@ -254,12 +391,28 @@ async def handle_text_or_url(message: Message, state: FSMContext):
                 parse_mode="HTML"
             )
     else:
+        # Проверяем, не просит ли пользователь изменить режим текстом
+        text_lower = text.lower()
+        if "эдит" in text_lower or "тиreading" in text_lower or "shorts" in text_lower:
+            session["mode"] = "edit_tiktok"
+        elif "ютуб" in text_lower or "youtube" in text_lower or "длинн" in text_lower:
+            session["mode"] = "youtube_long"
+        elif "чистк" in text_lower or "убрать паузы" in text_lower or "тишин" in text_lower:
+            session["mode"] = "clean_silence"
+
         session["prompt"] = text
+
         if session.get("input_video"):
             await message.answer(
                 f"📝 <b>Пожелания приняты:</b> <i>{text}</i>\n"
-                "Нажмите кнопку ниже для запуска монтажа:",
-                reply_markup=get_process_keyboard(session["add_sfx"], session["add_music"]),
+                f"Режим: <b>{MODE_NAMES.get(session['mode'])}</b>\n"
+                "Нажмите кнопку ниже для запуска:",
+                reply_markup=get_process_keyboard(
+                    mode=session["mode"],
+                    has_custom_music=session.get("custom_music_path") is not None,
+                    use_ai_music=session.get("use_ai_music", True),
+                    add_sfx=session.get("add_sfx", True)
+                ),
                 parse_mode="HTML"
             )
         else:
@@ -271,7 +424,7 @@ async def handle_text_or_url(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "start_render")
 async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
-    await callback.answer("Запускаю процесс монтажа...")
+    await callback.answer("Запускаю монтаж...")
     
     user_id = callback.from_user.id
     session = get_session(user_id)
@@ -282,8 +435,11 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
 
     input_video = session["input_video"]
     ref_url = session.get("reference_url")
+    mode = session.get("mode", "edit_tiktok")
+    custom_music = session.get("custom_music_path")
+    use_ai_music = session.get("use_ai_music", True)
     add_sfx = session.get("add_sfx", True)
-    add_music = session.get("add_music", False)
+    prompt = session.get("prompt")
     
     status_msg = await callback.message.edit_text("🔍 <b>Шаг 1/3:</b> Анализирую структуру речи и пауз...", parse_mode="HTML")
     
@@ -295,20 +451,25 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
                 ref_path = await VideoDownloader.download_reference(ref_url, f"ref_{user_id}.mp4")
                 pace_info = await VideoAnalyzer.analyze_cuts(ref_path)
             except Exception as e:
-                await callback.message.answer(f"⚠️ Не удалось распарсить референс ({e}), использую стандартный динамичный темп.")
+                await callback.message.answer(f"⚠️ Не удалось распарсить референс ({e}), использую стандартный темп.")
 
-        await status_msg.edit_text("✂️ <b>Шаг 2/3:</b> Нахожу немые паузы для вырезания...", parse_mode="HTML")
-        silences = await AudioAnalyzer.detect_silence(input_video)
+        await status_msg.edit_text("✂️ <b>Шаг 2/3:</b> Нахожу паузы и неловкие заминки...", parse_mode="HTML")
+        silences = await AudioAnalyzer.detect_silence(input_video, mode=mode)
 
-        sfx_text = "Включены (Whoosh 🔊)" if add_sfx else "Выключены"
-        music_text = "Включена (Lo-Fi 🎵)" if add_music else "Выключена"
+        if custom_music:
+            m_info = "Пользовательский трек 🎧"
+        elif use_ai_music and mode != "clean_silence":
+            sel_track = MusicSelector.ai_select_track(prompt, mode)
+            m_info = f"AI-подбор ({sel_track.stem}) 🤖"
+        else:
+            m_info = "Без музыки"
 
         await status_msg.edit_text(
             f"🎬 <b>Шаг 3/3:</b> Монтирую ролик...\n"
+            f"• Режим: <b>{MODE_NAMES.get(mode)}</b>\n"
             f"• Найдено пауз: <b>{len(silences)}</b>\n"
-            f"• Динамический зум: <b>Включен (1.1x)</b>\n"
-            f"• SFX Переходы: <b>{sfx_text}</b>\n"
-            f"• Фоновая музыка: <b>{music_text}</b>\n\n"
+            f"• Музыка: <b>{m_info}</b>\n"
+            f"• Whoosh-переходы: <b>{'Вкл' if add_sfx and mode == 'edit_tiktok' else 'Выкл'}</b>\n\n"
             f"Идет рендеринг через FFmpeg...",
             parse_mode="HTML"
         )
@@ -318,9 +479,11 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
             input_video=input_video,
             silences=silences,
             output_name=output_name,
-            apply_dynamic_zoom=True,
-            add_sfx_whoosh=add_sfx,
-            add_bg_music=add_music
+            mode=mode,
+            custom_music_path=custom_music,
+            use_ai_music=use_ai_music,
+            prompt=prompt,
+            add_sfx_whoosh=add_sfx
         )
 
         final_size = result_path.stat().st_size
@@ -344,13 +507,11 @@ async def process_video(callback: CallbackQuery, bot: Bot, state: FSMContext):
         await status_msg.edit_text("🚀 Отправляю готовое видео в чат...", parse_mode="HTML")
         video_file = FSInputFile(result_path)
         
-        pace_str = pace_info['pace'] if pace_info else 'Reels Dynamic'
         caption = (
             "✨ <b>Ваше видео готово!</b>\n\n"
+            f"• Режим: <b>{MODE_NAMES.get(mode)}</b>\n"
             f"• Вырезано немых пауз: <b>{len(silences)}</b>\n"
-            f"• SFX переходы (Whoosh): <b>{'Да 🔊' if add_sfx else 'Нет'}</b>\n"
-            f"• Фоновая музыка: <b>{'Да 🎵' if add_music else 'Нет'}</b>\n"
-            f"• Стиль: <b>{pace_str}</b>\n\n"
+            f"• Музыка: <b>{m_info}</b>\n\n"
             "Смонтировано в <b>ai-editor from softer_052</b>"
         )
         await callback.message.answer_video(video=video_file, caption=caption, parse_mode="HTML")

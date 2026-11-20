@@ -6,11 +6,26 @@ from config import FFMPEG_PATH
 
 class AudioAnalyzer:
     @staticmethod
-    async def detect_silence(video_path: Path, noise_threshold_db: int = -30, min_silence_sec: float = 0.5) -> List[Dict[str, float]]:
+    async def detect_silence(
+        video_path: Path,
+        mode: str = "edit_tiktok"
+    ) -> List[Dict[str, float]]:
         """
-        Использует ffmpeg silencedetect для поиска немых пауз в речи,
-        чтобы автоматически вырезать их для динамичного темпа.
+        Ищет паузы и моменты тишины в зависимости от выбранного режима:
+        - edit_tiktok: вырезает даже микро-паузы (> 0.35s) для клиповой динамики.
+        - youtube_long: убирает только долгие заминки (> 0.9s), не нарушая дыхание и темп речи.
+        - clean_silence: стандартное удаление неловких пауз (> 0.6s).
         """
+        if mode == "edit_tiktok":
+            noise_threshold_db = -28
+            min_silence_sec = 0.35
+        elif mode == "youtube_long":
+            noise_threshold_db = -32
+            min_silence_sec = 0.90
+        else: # clean_silence
+            noise_threshold_db = -30
+            min_silence_sec = 0.60
+
         cmd = [
             FFMPEG_PATH,
             "-i", str(video_path),

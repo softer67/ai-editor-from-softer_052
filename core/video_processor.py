@@ -3,10 +3,10 @@ import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from config import FFMPEG_PATH, TEMP_DIR, BASE_DIR
+from core.music_selector import MusicSelector
 
 ASSETS_DIR = BASE_DIR / "assets"
 SFX_WHOOSH = ASSETS_DIR / "sfx" / "whoosh.wav"
-MUSIC_BG = ASSETS_DIR / "music" / "lofi_beat.wav"
 
 class VideoProcessor:
     @staticmethod
@@ -14,18 +14,17 @@ class VideoProcessor:
         input_video: Path,
         silences: List[Dict[str, float]],
         output_name: str = "edited_result.mp4",
-        apply_dynamic_zoom: bool = True,
-        add_sfx_whoosh: bool = True,
-        add_bg_music: bool = False,
-        bg_music_volume: float = 0.08
+        mode: str = "edit_tiktok",             # "edit_tiktok" | "youtube_long" | "clean_silence"
+        custom_music_path: Optional[Path] = None,
+        use_ai_music: bool = False,
+        prompt: Optional[str] = None,
+        add_sfx_whoosh: bool = True
     ) -> Path:
         """
-        Монтаж видео:
-        1. Вырезает немые паузы речи.
-        2. Добавляет динамический зум 1.1x (punch-in) для удержания внимания.
-        3. Накладывает звуковой эффект Whoosh на переходах и зумах.
-        4. Опционально добавляет мягкую фоновую музыку (Lo-Fi) с авто-балансом громкости.
-        5. Оптимизирует под HD 720p для лимита Telegram.
+        Универсальный видеопроцессор с тремя режимами монтажа:
+        1. edit_tiktok: Клиповый эдит под 9:16 (или мобильный), частые зумы 1.15x, Whoosh, драйвовая музыка.
+        2. youtube_long: Горизонтальный 16:9, мягкая чистка пауз, редкие легкие зумы 1.05x, тихий Lo-Fi фон.
+        3. clean_silence: Исходный ракурс (без зумов), чистое удаление неловких пауз и шумов.
         """
         output_path = TEMP_DIR / output_name
 
@@ -42,10 +41,11 @@ class VideoProcessor:
 
         total_duration = await asyncio.to_thread(_get_duration, input_video)
 
-        # Вычисляем активные интервалы речи
+        # Буфер краев речи в зависимости от режима
+        padding = 0.06 if mode == "edit_tiktok" else 0.12
+
         active_intervals = []
         last_end = 0.0
-        padding = 0.08  # буфер краев речи (чтобы не обрезать согласные)
 
         for s in silences:
             start_sil = max(0.0, s["start"] + padding)
@@ -60,31 +60,56 @@ class VideoProcessor:
         if not active_intervals:
             active_intervals = [(0.0, total_duration)]
 
+        # Определяем музыку
+        music_file: Optional[Path] = None
+        if custom_music_path and custom_music_path.exists():
+            music_file = custom_music_path
+        elif use_ai_music:
+            music_file = MusicSelector.ai_select_track(prompt, mode)
+
+        has_music = music_file is not None and music_file.exists() and mode != "clean_silence"
+        has_whoosh = add_sfx_whoosh and SFX_WHOOSH.exists() and mode == "edit_tiktok"
+
+        # Параметры видео под режим
+        if mode == "edit_tiktok":
+            zoom_factor = 1.15
+            music_vol = 0.12
+            scale_filter = "scale=-2:720"
+        elif mode == "youtube_long":
+            zoom_factor = 1.05
+            music_vol = 0.06
+            scale_filter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
+        else: # clean_silence
+            zoom_factor = 1.0
+            music_vol = 0.0
+            scale_filter = "scale=-2:720"
+
         def _render():
             filter_chunks = []
             concat_inputs = []
 
-            has_whoosh = add_sfx_whoosh and SFX_WHOOSH.exists()
-            has_music = add_bg_music and MUSIC_BG.exists()
-
-            # Формируем цепочку фильтров для каждого активного интервала
             for idx, (st, en) in enumerate(active_intervals):
                 v_label = f"v{idx}"
                 a_label = f"a{idx}"
                 chunk_dur = en - st
 
-                # Чередуем зум (каждая вторая склейка)
-                is_zoom_cut = apply_dynamic_zoom and (idx % 2 == 1)
-
-                if is_zoom_cut:
-                    # Динамический зум 1.1x по центру
-                    v_filter = f"[0:v]trim=start={st:.2f}:end={en:.2f},setpts=PTS-STARTPTS,scale=1.1*iw:-1,crop=iw/1.1:ih/1.1,scale=-2:720[{v_label}];"
+                # В режиме clean_silence зумов нет вообще
+                # В edit_tiktok зум на каждой 2-й склейке
+                # В youtube_long редкий зум на каждой 4-й склейке
+                if mode == "edit_tiktok":
+                    is_zoom = (idx % 2 == 1)
+                elif mode == "youtube_long":
+                    is_zoom = (idx % 4 == 2)
                 else:
-                    v_filter = f"[0:v]trim=start={st:.2f}:end={en:.2f},setpts=PTS-STARTPTS,scale=-2:720[{v_label}];"
+                    is_zoom = False
+
+                if is_zoom:
+                    v_filter = f"[0:v]trim=start={st:.2f}:end={en:.2f},setpts=PTS-STARTPTS,scale={zoom_factor}*iw:-1,crop=iw/{zoom_factor}:ih/{zoom_factor},{scale_filter}[{v_label}];"
+                else:
+                    v_filter = f"[0:v]trim=start={st:.2f}:end={en:.2f},setpts=PTS-STARTPTS,{scale_filter}[{v_label}];"
 
                 # Нарезка аудио
-                if is_zoom_cut and has_whoosh:
-                    # Подмешиваем звуковой эффект Whoosh в начало склейки
+                if is_zoom and has_whoosh:
                     v_raw_a = f"a_raw_{idx}"
                     sfx_raw = f"sfx_{idx}"
                     a_filter = (
@@ -99,14 +124,13 @@ class VideoProcessor:
                 filter_chunks.append(a_filter)
                 concat_inputs.append(f"[{v_label}][{a_label}]")
 
-            # Склейка всех видео и аудио фрагментов
             concat_filter = f"{''.join(concat_inputs)}concat=n={len(active_intervals)}:v=1:a=1[concat_v][concat_a]"
             
-            # Если включена фоновая музыка, подмешиваем ее
+            # Подмешивание фоновой музыки
             music_input_idx = 2 if has_whoosh else 1
             if has_music:
                 mix_music_filter = (
-                    f";[{music_input_idx}:a]volume={bg_music_volume}[music_low];"
+                    f";[{music_input_idx}:a]volume={music_vol}[music_low];"
                     f"[concat_a][music_low]amix=inputs=2:duration=first:dropout_transition=2[outa]"
                 )
                 final_filter = "".join(filter_chunks) + concat_filter + mix_music_filter
@@ -125,7 +149,7 @@ class VideoProcessor:
                 cmd.extend(["-i", str(SFX_WHOOSH)])
 
             if has_music:
-                cmd.extend(["-stream_loop", "-1", "-i", str(MUSIC_BG)])
+                cmd.extend(["-stream_loop", "-1", "-i", str(music_file)])
 
             cmd.extend([
                 "-filter_complex", final_filter,
@@ -143,7 +167,6 @@ class VideoProcessor:
 
             process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if process.returncode != 0:
-                # Fallback в случае нестандартного аудиоформата
                 fallback_cmd = [
                     FFMPEG_PATH, "-y", "-i", str(input_video),
                     "-vf", "scale=-2:720",
